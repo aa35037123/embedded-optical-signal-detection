@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Optical Signal Generator</title>
+  <style>
+    :root {
+      --panel-bg: rgba(22, 22, 24, 0.88);
+      --panel-border: rgba(255, 255, 255, 0.15);
+      --text: #f2f3f5;
+      --muted: #b7bec7;
+      --control-bg: rgba(255, 255, 255, 0.06);
+      --accent: #6ea8fe;
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #000;
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+    }
+
+    body {
+      position: relative;
+      transition: background 0.2s ease;
+    }
+
+    #stage {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      touch-action: manipulation;
+    }
+
+    #light {
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      transform: translate(-50%, -50%);
+      box-shadow: 0 0 20px rgba(255, 255, 255, 0.08);
+      transition:
+        left 0.12s ease,
+        top 0.12s ease,
+        width 0.12s ease,
+        height 0.12s ease,
+        background 0.12s ease,
+        box-shadow 0.12s ease;
+    }
+
+    #controls {
+      position: absolute;
+      z-index: 10;
+      top: max(16px, env(safe-area-inset-top));
+      left: max(16px, env(safe-area-inset-left));
+      width: min(330px, calc(100vw - 32px));
+      background: var(--panel-bg);
+      border: 1px solid var(--panel-border);
+      border-radius: 14px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.3);
+      padding: 14px 14px 12px;
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+
+    .group { margin-bottom: 12px; }
+
+    .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .value {
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--accent);
+    }
+
+    select {
+      width: 100%;
+      border: 1px solid var(--panel-border);
+      background: var(--control-bg);
+      color: var(--text);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font-size: 0.95rem;
+    }
+
+    .color-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .color-option {
+      flex: 1;
+      position: relative;
+    }
+
+    .color-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .color-swatch {
+      display: block;
+      width: 100%;
+      height: 34px;
+      border-radius: 8px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.12s ease, border-color 0.12s ease;
+    }
+
+    .color-option input:checked + .color-swatch {
+      border-color: #fff;
+      transform: translateY(-1px);
+    }
+
+    .color-red { background: #ff3b30; }
+    .color-green { background: #30d158; }
+    .color-blue { background: #0a84ff; }
+
+    .button-row {
+      display: flex;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    button {
+      border: 1px solid var(--panel-border);
+      background: var(--control-bg);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 0.9rem;
+      cursor: pointer;
+      transition: background 0.12s ease, transform 0.12s ease;
+    }
+
+    button:hover { background: rgba(255, 255, 255, 0.12); }
+    button:active { transform: translateY(1px); }
+    .primary { background: rgba(110, 168, 254, 0.18); }
+
+    .ground-truth {
+      margin-top: 12px;
+      border-top: 1px solid var(--panel-border);
+      padding-top: 10px;
+    }
+
+    .ground-truth h2 {
+      margin: 0 0 8px;
+      font-size: 0.8rem;
+      color: var(--muted);
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .truth-grid {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 4px 10px;
+      font-size: 0.82rem;
+      line-height: 1.5;
+      color: var(--text);
+    }
+
+    .truth-key { color: var(--muted); }
+
+    /* Experiment mode: only the optical target remains visible. */
+    body.experiment-mode #controls {
+      display: none;
+    }
+
+    /* Mobile layout: keep the panel inside the dynamic viewport and scroll it
+       instead of letting it overflow off-screen. */
+    @media (max-width: 700px) {
+      #controls {
+        top: max(12px, env(safe-area-inset-top));
+        bottom: auto;
+        left: 50%;
+        transform: translateX(-50%);
+        width: calc(100vw - 24px);
+        max-width: 420px;
+        max-height: calc(
+          100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)
+        );
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="stage">
+    <div id="light"></div>
+  </div>
+
+  <aside id="controls">
+    <h1>Optical Signal Generator</h1>
+
+    <div class="group">
+      <div class="label-row"><span>Color</span></div>
+      <div class="color-row">
+        <label class="color-option">
+          <input type="radio" name="color" value="red" checked />
+          <span class="color-swatch color-red" aria-label="Red"></span>
+        </label>
+        <label class="color-option">
+          <input type="radio" name="color" value="green" />
+          <span class="color-swatch color-green" aria-label="Green"></span>
+        </label>
+        <label class="color-option">
+          <input type="radio" name="color" value="blue" />
+          <span class="color-swatch color-blue" aria-label="Blue"></span>
+        </label>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="label-row">
+        <span>Brightness</span><span id="brightness-value" class="value">80%</span>
+      </div>
+      <input id="brightness" type="range" min="0" max="100" step="1" value="80" />
+    </div>
+
+    <div class="group">
+      <div class="label-row">
+        <span>Radius</span><span id="radius-value" class="value">25 px</span>
+      </div>
+      <input id="radius" type="range" min="5" max="50" step="1" value="25" />
+    </div>
+
+    <div class="group">
+      <div class="label-row">
+        <span>Normalized X</span><span id="x-value" class="value">0.500</span>
+      </div>
+      <input id="x" type="range" min="0" max="1" step="0.001" value="0.5" />
+    </div>
+
+    <div class="group">
+      <div class="label-row">
+        <span>Normalized Y</span><span id="y-value" class="value">0.500</span>
+      </div>
+      <input id="y" type="range" min="0" max="1" step="0.001" value="0.5" />
+    </div>
+
+    <div class="group">
+      <div class="label-row"><span>Background</span></div>
+      <select id="background">
+        <option value="black">Black</option>
+        <option value="gray">Gray</option>
+        <option value="white">White</option>
+      </select>
+    </div>
+
+    <div class="button-row">
+      <button id="randomize" class="primary" type="button">Randomize</button>
+      <button id="fullscreen" type="button">Experiment Mode</button>
+    </div>
+
+    <div class="ground-truth">
+      <h2>Ground truth</h2>
+      <div id="truth" class="truth-grid"></div>
+    </div>
+  </aside>
+
+  <script>
+    const state = {
+      color: 'red',
+      brightness: 80,
+      radius: 25,
+      x: 0.5,
+      y: 0.5,
+      background: 'black'
+    };
+
+    const stage = document.getElementById('stage');
+    const light = document.getElementById('light');
+    const truth = document.getElementById('truth');
+
+    const backgroundMap = {
+      black: '#000000',
+      gray: '#666666',
+      white: '#ffffff'
+    };
+
+    const colorMap = {
+      red: [255, 0, 0],
+      green: [0, 255, 0],
+      blue: [0, 0, 255]
+    };
+
+    function clamp(value, min, max) {
+      return Math.min(Math.max(value, min), max);
+    }
+
+    function setValue(id, value) {
+      const input = document.getElementById(id);
+      if (input) input.value = value;
+    }
+
+    function updateLabels() {
+      document.getElementById('brightness-value').textContent = `${state.brightness}%`;
+      document.getElementById('radius-value').textContent = `${state.radius} px`;
+      document.getElementById('x-value').textContent = state.x.toFixed(3);
+      document.getElementById('y-value').textContent = state.y.toFixed(3);
+    }
+
+    function renderTruth() {
+      truth.innerHTML = `
+        <span class="truth-key">color</span><span>${state.color}</span>
+        <span class="truth-key">brightness</span><span>${state.brightness}%</span>
+        <span class="truth-key">radius</span><span>${state.radius}px</span>
+        <span class="truth-key">x</span><span>${state.x.toFixed(3)}</span>
+        <span class="truth-key">y</span><span>${state.y.toFixed(3)}</span>
+        <span class="truth-key">background</span><span>${state.background}</span>
+      `;
+    }
+
+    function renderSignal() {
+      const brightnessFactor = state.brightness / 100;
+      const [r, g, b] = colorMap[state.color];
+      const rgb = [
+        Math.round(r * brightnessFactor),
+        Math.round(g * brightnessFactor),
+        Math.round(b * brightnessFactor)
+      ];
+
+      const stageRect = stage.getBoundingClientRect();
+      const size = state.radius * 2;
+
+      // x/y describe the target's allowed travel range, not the raw screen edge.
+      // This keeps the entire circle visible even at x/y = 0 or 1.
+      const usableWidth = Math.max(0, stageRect.width - size);
+      const usableHeight = Math.max(0, stageRect.height - size);
+      const centerX = state.radius + usableWidth * state.x;
+      const centerY = state.radius + usableHeight * state.y;
+
+      const glow = Math.max(18, state.radius * 3);
+
+      document.body.style.background = backgroundMap[state.background];
+      light.style.width = `${size}px`;
+      light.style.height = `${size}px`;
+      light.style.left = `${centerX}px`;
+      light.style.top = `${centerY}px`;
+      light.style.background = `rgb(${rgb[0]}, ${rgb[1]}, ${rgb[2]})`;
+      light.style.boxShadow =
+        `0 0 ${glow}px rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.7)`;
+    }
+
+    function syncUIFromState() {
+      const colorInput =
+        document.querySelector(`input[name="color"][value="${state.color}"]`);
+      if (colorInput) colorInput.checked = true;
+
+      setValue('brightness', state.brightness);
+      setValue('radius', state.radius);
+      setValue('x', state.x);
+      setValue('y', state.y);
+      setValue('background', state.background);
+
+      updateLabels();
+      renderTruth();
+      renderSignal();
+    }
+
+    document.querySelectorAll('input[name="color"]').forEach((radio) => {
+      radio.addEventListener('change', (event) => {
+        state.color = event.target.value;
+        renderTruth();
+        renderSignal();
+      });
+    });
+
+    document.getElementById('brightness').addEventListener('input', (event) => {
+      state.brightness = Number(event.target.value);
+      updateLabels();
+      renderTruth();
+      renderSignal();
+    });
+
+    document.getElementById('radius').addEventListener('input', (event) => {
+      state.radius = Number(event.target.value);
+      updateLabels();
+      renderTruth();
+      renderSignal();
+    });
+
+    document.getElementById('x').addEventListener('input', (event) => {
+      state.x = clamp(Number(event.target.value), 0, 1);
+      updateLabels();
+      renderTruth();
+      renderSignal();
+    });
+
+    document.getElementById('y').addEventListener('input', (event) => {
+      state.y = clamp(Number(event.target.value), 0, 1);
+      updateLabels();
+      renderTruth();
+      renderSignal();
+    });
+
+    document.getElementById('background').addEventListener('change', (event) => {
+      state.background = event.target.value;
+      renderTruth();
+      renderSignal();
+    });
+
+    function randomizeState() {
+      const colors = ['red', 'green', 'blue'];
+      const backgrounds = ['black', 'gray', 'white'];
+
+      state.color = colors[Math.floor(Math.random() * colors.length)];
+      state.brightness = Math.floor(Math.random() * 101);
+      state.radius = Math.floor(Math.random() * 46) + 5;
+      state.x = Number(Math.random().toFixed(3));
+      state.y = Number(Math.random().toFixed(3));
+      state.background =
+        backgrounds[Math.floor(Math.random() * backgrounds.length)];
+
+      syncUIFromState();
+    }
+
+    document.getElementById('randomize').addEventListener('click', randomizeState);
+
+    async function enterExperimentMode() {
+      document.body.classList.add('experiment-mode');
+      renderSignal();
+
+      try {
+        const root = document.documentElement;
+        if (!document.fullscreenElement) {
+          if (root.requestFullscreen) {
+            await root.requestFullscreen();
+          } else if (root.webkitRequestFullscreen) {
+            root.webkitRequestFullscreen();
+          }
+        }
+      } catch (error) {
+        // iOS browsers may reject Fullscreen API for ordinary web pages.
+        // Experiment mode still works because the controls are hidden.
+        console.warn('Fullscreen request failed:', error);
+      }
+    }
+
+    async function exitExperimentMode() {
+      document.body.classList.remove('experiment-mode');
+
+      try {
+        if (document.fullscreenElement && document.exitFullscreen) {
+          await document.exitFullscreen();
+        }
+      } catch (error) {
+        console.warn('Exit fullscreen failed:', error);
+      }
+
+      renderSignal();
+    }
+
+    document.getElementById('fullscreen')
+      .addEventListener('click', enterExperimentMode);
+
+    // Double-tap/click the experiment screen to restore the controls.
+    stage.addEventListener('click', () => {
+        if (document.body.classList.contains('experiment-mode')) {
+            exitExperimentMode();
+        }
+        });
+
+    window.addEventListener('resize', renderSignal);
+    window.addEventListener('orientationchange', () => {
+      setTimeout(renderSignal, 100);
+    });
+
+    syncUIFromState();
+  </script>
+</body>
+</html>
