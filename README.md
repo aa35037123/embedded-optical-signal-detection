@@ -1,12 +1,26 @@
 # Real-Time Embedded Optical Signal Detection
 
-This repository contains the initial milestone for a Raspberry Pi-based camera acquisition pipeline. The goal of this stage is to prove that the Raspberry Pi camera can capture RGB frames at a stable rate and expose them in an OpenCV-friendly format without yet introducing detection logic, networking, or GPU processing.
+A CPU-only OpenCV MVP for detecting all valid red, green, or blue optical
+blobs. No ML is used. Camera capture, detection, and visualization are separate.
+A browser-based signal generator provides a controllable target on a phone.
 
-The repository also includes a browser-based optical signal generator that can be opened on a phone and used as a controllable visual target for the Raspberry Pi camera.
+```text
+BGR frame → HSV → red/green/blue masks + brightness threshold
+          → morphology → contours → area filter → all valid blobs
+          → centroid, color, radius, confidence → overlay + JSONL
+```
 
 ## Project goal
 
-The first milestone focuses on acquisition:
+The project currently focuses on these stages:
+
+- capture frames from the Raspberry Pi camera
+- detect multiple red, green, and blue circular targets in real time
+- calculate centroid, normalized position, area, radius, and brightness
+- render a small deterministic overlay for debugging and validation
+- keep detection and visualization separate for future experimentation
+
+The first milestone focused on acquisition:
 
 - initialize the Raspberry Pi camera with Picamera2
 - capture frames at 640x480 resolution
@@ -22,10 +36,22 @@ The first milestone focuses on acquisition:
 embedded-optical-signal-detection/
 ├── README.md
 ├── requirements.txt
+├── configs/
+│   └── detection.yaml
 ├── src/
-│   └── capture/
+│   ├── pipeline.py
+│   ├── capture/
+│   │   ├── __init__.py
+│   │   └── camera.py
+│   ├── detection/
+│   │   ├── __init__.py
+│   │   ├── detector.py
+│   │   └── types.py
+│   └── visualization/
 │       ├── __init__.py
-│       └── camera.py
+│       └── overlay.py
+├── tests/
+│   └── test_detector.py
 └── tools/
     └── signal_generator/
         └── index.html
@@ -33,26 +59,117 @@ embedded-optical-signal-detection/
 
 ## Setup
 
-From the project root, create a virtual environment with access to the Raspberry Pi system packages:
+On Raspberry Pi OS, install the camera bindings through the system package manager,
+then expose them to the virtual environment:
 
 ```bash
+sudo apt install python3-picamera2
 python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run the acquisition loop
-
-Run with an OpenCV preview window:
+On a desktop, image/video/demo modes do not require Picamera2:
 
 ```bash
-python3 src/capture/camera.py --display
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-Run without the OpenCV window:
+## Run the spectrum tracker MVP
+
+Run all commands from the project root. The default source is the Raspberry Pi
+camera at the configured resolution (640×480 by default), requesting 30 FPS:
 
 ```bash
-python3 src/capture/camera.py
+python -m src.pipeline --display
+```
+
+Without a desktop/over SSH, omit `--display`. Press Ctrl+C to stop; in the live
+preview, `q` or Escape also exits. A single-image preview waits for a key.
+
+```bash
+python -m src.pipeline --jsonl detections.jsonl
+python -m src.pipeline --demo --display
+python -m src.pipeline --demo --max-frames 90 --jsonl demo.jsonl --output demo.png
+python -m src.pipeline --image test.jpg --output annotated.jpg
+python -m src.pipeline --video recording.mp4 --display
+python -m src.pipeline --webcam 0 --display
+python -m src.pipeline --config configs/detection.yaml --fps 30 --display
+```
+
+`--output` saves the final annotated image; `--jsonl` writes one record per frame
+with `count` and a `detections` array containing all valid blobs. The original
+top-level detection fields still describe the largest blob for compatibility. These paths overwrite existing files. `--max-frames N` bounds a run;
+video files stop at EOF. Console status is printed once per second, or once for a
+still image:
+
+```text
+Targets: 2 | FPS: 29.4
+#1 Color: RED | Position: (318, 221) | Radius: 14.0 px | Confidence: 0.89
+#2 Color: BLUE | Position: (120, 180) | Radius: 10.0 px | Confidence: 0.86
+```
+
+Values above illustrate the format. FPS is measured pipeline throughput, starts at
+zero until the first one-second measurement, and is not a hardware performance
+guarantee. Video files are processed as fast as possible. Demo mode is paced by
+`--fps` and cycles through moving red, green, and blue targets.
+
+The preview labels every valid blob with its color, position, equivalent-area
+radius, and confidence, plus frame FPS and target count. Labels are numbered by
+area within each frame; these numbers are not persistent tracking IDs.
+Missing targets show `NO TARGET`; JSONL has `count: 0`, `detections: []`, and
+`valid: false` in the compatibility fields.
+
+Use `Detector.detect_all(frame)` to obtain the list of targets, ordered by
+descending area. The original `Detector.detect(frame)` API still returns only
+the largest valid blob. Temporal association and spectral/wavelength estimation
+are outside this MVP.
+
+### Threshold tuning
+
+Edit `configs/detection.yaml`:
+
+- `colors.*.hue_ranges`: OpenCV hue ranges (0–179); red wraps around the hue boundary.
+- `saturation_min`: reject white/gray pixels.
+- `value_min`: HSV brightness threshold (0–255); increase to reject dim backgrounds.
+- `min_area` / `max_area`: valid contour area in pixels squared. Adjust for target
+  distance and input resolution; image/video inputs retain their original size.
+- `morphology.open_kernel` / `close_kernel`: positive kernel sizes to remove specks
+  and close small gaps (defaults 3 and 5).
+
+All contours that pass the area filter are returned, including multiple blobs
+of the same color. Overlapping color masks use red, then green, then blue
+priority so the same pixels cannot produce duplicate detections. Touching blobs
+of the same color can merge into one contour; keep targets separated.
+Radius is `sqrt(area / pi)`. Confidence is a heuristic in [0, 1]:
+`circularity × mean saturation / 255 × mean brightness / 255`, measured only on
+the selected blob. It is not a calibrated detection probability or an additional
+acceptance threshold. Bright colored background objects can also be detected;
+start with a dark background and tune thresholds using the phone target.
+
+Picamera2's `RGB888` arrays already contain BGR bytes, so capture passes them
+straight to OpenCV; see the [official Picamera2 manual](https://datasheets.raspberrypi.com/camera/picamera2-manual.pdf).
+External RGB arrays must be converted with `cv2.COLOR_RGB2BGR` before calling
+`Detector.detect()`.
+
+### Validation
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Tests cover the three colors, red hue wraparound, largest valid blob selection,
+brightness rejection, selected-blob confidence, image/video execution, camera
+channel order, and status rendering with no target. Camera hardware and GUI
+preview require validation on the Raspberry Pi.
+
+The original acquisition-only command remains available:
+
+```bash
+python -m src.capture.camera --display
 ```
 
 ## Optical Signal Generator
@@ -64,6 +181,27 @@ tools/signal_generator/index.html
 ```
 
 It can display a configurable colored target that can be observed by the Raspberry Pi camera.
+
+### Random multi-target scenes
+
+Select **Random scenes**, enter the inclusive target count range **n–m** (0–200)
+and the dwell time in seconds (0.1–3600), then press **套用並換幕** to apply.
+Press **開始自動切換** to cycle scenes and the same button to pause. **下一幕**
+advances immediately and restarts the dwell timer. Defaults are 1–5 targets and
+3 seconds per scene; automatic switching starts only when requested.
+
+Each scene randomly places non-overlapping circles, using mixed red/green/blue
+colors or the selected fixed color. Brightness, radius, and background remain
+controlled by their sliders/settings. Set n = m for a fixed count, or n = m = 0
+for a blank scene. If the maximum count cannot fit, reduce m or the radius.
+Resizing creates a new arrangement; returning from a background tab restarts the
+full dwell time. Browser timers are approximate, not precision timing hardware.
+
+Use **Experiment Mode** to hide the controls so they do not cover the targets;
+click the screen or press Escape to return. **Manual target** retains the original
+single-target position controls. Ground truth lists each target's color and
+center in browser CSS pixels. The camera pipeline reports all valid blobs displayed by the page, subject to
+the configured color, brightness, and area thresholds.
 
 ### Start the web server
 
@@ -148,7 +286,6 @@ in the terminal running the HTTP server.
 
 Future milestones will introduce:
 
-- optical signal detection
 - automatic ground-truth collection
 - communication between the signal generator and detection pipeline
 - experiment logging and evaluation

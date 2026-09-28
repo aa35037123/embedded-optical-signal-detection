@@ -15,7 +15,6 @@ import time
 
 import cv2
 import numpy as np
-from picamera2 import Picamera2
 
 
 class CameraAcquisition:
@@ -31,6 +30,8 @@ class CameraAcquisition:
         self.width = width
         self.height = height
         self.target_fps = fps
+        from picamera2 import Picamera2
+
         self.camera = Picamera2()
         self._running = False
 
@@ -56,16 +57,14 @@ class CameraAcquisition:
         time.sleep(0.2)
 
     def _to_opencv_frame(self, frame: np.ndarray) -> np.ndarray:
-        """Convert the RGB array into the BGR format used by OpenCV.
+        """RGB888 in Picamera2 already provides BGR bytes for OpenCV."""
+        return np.ascontiguousarray(frame)
 
-        Picamera2 can provide frames in RGB order, while OpenCV expects BGR for
-        imshow() and most image operations. Converting here keeps the rest of the
-        code straightforward and avoids mixing color ordering assumptions.
-        """
-        rgb_frame = np.ascontiguousarray(frame)
-        if rgb_frame.ndim == 3 and rgb_frame.shape[2] == 3:
-            return cv2.cvtColor(rgb_frame, cv2.COLOR_RGB2BGR)
-        return rgb_frame
+    def read(self) -> np.ndarray:
+        """Capture one BGR frame, starting acquisition if needed."""
+        if not self._running:
+            self.start()
+        return self._to_opencv_frame(self.camera.capture_array())
 
     def capture_loop(self, display: bool = False) -> None:
         """Run the main acquisition loop until Ctrl+C is pressed."""

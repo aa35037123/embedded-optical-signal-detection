@@ -1,0 +1,30 @@
+width: 640
+height: 480
+min_area: 50
+max_area: 5000
+morphology:
+  open_kernel: 3
+  close_kernel: 5
+colors:
+  red:
+    hue_ranges:
+      - [0, 12]
+      - [168, 180]
+    saturation_min: 80
+    saturation_max: 255
+    value_min: 60
+    value_max: 255
+  green:
+    hue_ranges:
+      - [36, 90]
+    saturation_min: 80
+    saturation_max: 255
+    value_min: 60
+    value_max: 255
+  blue:
+    hue_ranges:
+      - [90, 130]
+    saturation_min: 80
+    saturation_max: 255
+    value_min: 60
+    value_max: 255
