@@ -92,7 +92,8 @@ def test_all_blobs_including_repeated_colors():
     frame += _make_frame((0, 0, 100), 250, 120, 15)
     frame += _make_frame((0, 255, 0), 400, 120, 20)
     frame += _make_frame((255, 0, 0), 540, 120, 18)
-    results = Detector().detect_all(frame, fps=24)
+    from src.detection.types import DetectionConfig
+    results = Detector(DetectionConfig(min_confidence=0)).detect_all(frame, fps=24)
     assert len(results) == 4
     by_x = sorted(results, key=lambda result: result.centroid_x)
     assert [r.detected_color for r in by_x] == ['red', 'red', 'green', 'blue']
@@ -117,3 +118,29 @@ def test_overlapping_color_ranges_do_not_duplicate_blob():
     import cv2
     frame = cv2.cvtColor(_make_frame((90, 255, 255), 100, 100, 20), cv2.COLOR_HSV2BGR)
     assert len(Detector().detect_all(frame)) == 1
+
+
+def test_confidence_rejects_background_and_retains_rgb_targets():
+    import cv2
+    from src.detection.types import DetectionConfig
+    from src.detection.diagnostics import inspect_frame
+    frame = np.zeros((480, 640, 3), np.uint8)
+    for x, color in [(100, (0, 0, 255)), (250, (0, 255, 0)), (400, (255, 0, 0))]:
+        cv2.circle(frame, (x, 100), 20, color, -1)
+    # In-range area/HSV, but elongated: should not be accepted as a circular dot.
+    cv2.rectangle(frame, (50, 250), (220, 258), (0, 0, 255), -1)
+    cv2.circle(frame, (350, 250), 20, (120, 120, 200), -1)  # pale red patch
+    results = Detector(DetectionConfig(min_confidence=0.4)).detect_all(frame)
+    assert sorted(r.detected_color for r in results) == ['blue', 'green', 'red']
+    assert len(Detector(DetectionConfig(min_confidence=0)).detect_all(frame)) == 5
+    report, _ = inspect_frame(Detector(DetectionConfig(min_confidence=0.4)), frame)
+    rejected = [r for r in report['colors']['red']['candidates'] if r['status'] == 'low_confidence']
+    assert len(rejected) == 2
+    assert all(r['confidence'] < 0.4 for r in rejected)
+
+
+@pytest.mark.parametrize('threshold', [-0.1, 1.1, float('nan')])
+def test_rejects_invalid_confidence_threshold(threshold):
+    from src.detection.types import DetectionConfig
+    with pytest.raises(ValueError, match='min_confidence'):
+        Detector(DetectionConfig(min_confidence=threshold))

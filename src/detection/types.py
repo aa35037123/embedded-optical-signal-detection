@@ -31,6 +31,12 @@ class DetectionConfig:
     height: int = 480
     min_area: int = 50
     max_area: int = 5000
+    min_confidence: float = 0.0
+    min_circularity: float = 0.0
+    min_color_contrast: float = 0.0
+    color_samples_bgr: dict[str, list[list[int]]] = field(default_factory=dict)
+    color_distance_max: float = 30.0
+    color_margin: float = 8.0
     morphology: MorphologyConfig = field(default_factory=MorphologyConfig)
     color_thresholds: dict[str, ColorThreshold] = field(
         default_factory=lambda: {
@@ -53,6 +59,8 @@ class DetectionResult:
     centroid_norm_y: float = 0.0
     area: float = 0.0
     radius: float = 0.0
+    circularity: float = 0.0
+    color_contrast: float = 0.0
     confidence: float = 0.0
     mean_brightness: float = 0.0
     fps: float = 0.0

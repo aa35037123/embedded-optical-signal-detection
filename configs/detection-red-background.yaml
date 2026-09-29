@@ -1,3 +1,7 @@
+# Starting point for bright red display targets against a dim reddish background.
+# Not a calibrated NoIR profile: verify with raw camera pixels and debug masks.
+# Raise red value_min above background V while keeping it below target V.
+# A stricter threshold may reject dim targets. Other color/area settings are unchanged.
 width: 640
 height: 480
 min_area: 50
@@ -12,9 +16,9 @@ colors:
     hue_ranges:
       - [0, 12]
       - [168, 180]
-    saturation_min: 80
+    saturation_min: 140
     saturation_max: 255
-    value_min: 60
+    value_min: 180
     value_max: 255
   green:
     hue_ranges:

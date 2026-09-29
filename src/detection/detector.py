@@ -6,6 +6,7 @@ import cv2
 import numpy as np
 import yaml
 
+from src.detection.calibration import calibrated_masks, color_features, validate_samples
 from src.detection.types import ColorThreshold, DetectionConfig, DetectionResult, MorphologyConfig
 
 
@@ -38,6 +39,12 @@ def load_detection_config(config_path: str | Path | None = None) -> DetectionCon
         height=int(raw.get("height", 480)),
         min_area=int(raw.get("min_area", 50)),
         max_area=int(raw.get("max_area", 5000)),
+        min_confidence=float(raw.get("min_confidence", 0.0)),
+        min_circularity=float(raw.get("min_circularity", 0.0)),
+        min_color_contrast=float(raw.get("min_color_contrast", 0.0)),
+        color_samples_bgr=raw.get("color_samples_bgr", {}),
+        color_distance_max=float(raw.get("color_distance_max", 30.0)),
+        color_margin=float(raw.get("color_margin", 8.0)),
         morphology=MorphologyConfig(
             open_kernel=int(morphology.get("open_kernel", 3)),
             close_kernel=int(morphology.get("close_kernel", 5)),
@@ -57,7 +64,20 @@ class Detector:
         else:
             self.config = config
 
-    def build_mask(self, hsv_frame: np.ndarray, color_name: str) -> np.ndarray:
+        if not 0.0 <= self.config.min_confidence <= 1.0:
+            raise ValueError("min_confidence must be between 0 and 1.")
+
+        if not 0 <= self.config.min_circularity <= 1:
+            raise ValueError("min_circularity must be between 0 and 1.")
+        for name in ('min_color_contrast', 'color_distance_max', 'color_margin'):
+            value = getattr(self.config, name)
+            if not np.isfinite(value) or value < 0:
+                raise ValueError(f'{name} must be finite and nonnegative.')
+        if self.config.color_samples_bgr:
+            validate_samples(self.config.color_samples_bgr)
+
+    def build_mask(self, hsv_frame: np.ndarray, color_name: str, *,
+                   morphology: bool = True) -> np.ndarray:
         """Build a binary HSV mask for a target color, using configurable thresholds."""
         if hsv_frame.ndim != 3 or hsv_frame.shape[2] != 3:
             raise ValueError("Expected an HSV image with shape (H, W, 3).")
@@ -77,9 +97,12 @@ class Detector:
             value_mask = (value >= threshold.value_min) & (value <= threshold.value_max)
             mask |= ((hue_mask & sat_mask & value_mask)).astype(np.uint8)
 
-        if mask.size == 0:
+        if mask.size == 0 or not morphology:
             return mask
 
+        return self.clean_mask(mask)
+
+    def clean_mask(self, mask):
         open_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.config.morphology.open_kernel, self.config.morphology.open_kernel))
         close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.config.morphology.close_kernel, self.config.morphology.close_kernel))
 
@@ -88,7 +111,8 @@ class Detector:
         return mask
 
     def _measure_candidate(self, contour: np.ndarray, mask: np.ndarray,
-                           hsv_frame: np.ndarray, color_name: str) -> DetectionResult | None:
+                           hsv_frame: np.ndarray, color_name: str,
+                           features: np.ndarray | None = None) -> DetectionResult | None:
         area = cv2.contourArea(contour)
         if not self.config.min_area <= area <= self.config.max_area:
             return None
@@ -117,8 +141,25 @@ class Detector:
         # Heuristic quality score, not a calibrated probability.
         confidence = float(circularity * mean_saturation / 255.0 * mean_brightness / 255.0)
 
+        contrast = 0.0
+        if features is not None:
+            # Compare the filled blob with a nearby ring, ignoring brightness dominance.
+            padding = max(3, min(12, int(radius * 0.4)))
+            x0, y0 = max(0, x-padding), max(0, y-padding)
+            x1, y1 = min(mask.shape[1], x+w+padding), min(mask.shape[0], y+h+padding)
+            region = np.zeros((y1-y0, x1-x0), np.uint8)
+            cv2.drawContours(region, [contour], -1, 1, cv2.FILLED, offset=(-x0, -y0))
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*padding+1, 2*padding+1))
+            ring = (cv2.dilate(region, kernel) > 0) & (region == 0)
+            local = features[y0:y1, x0:x1]
+            if ring.any():
+                contrast = float(np.linalg.norm(np.median(local[region > 0], axis=0)
+                                                - np.median(local[ring], axis=0)))
+
         return DetectionResult(
             valid=True,
+            circularity=float(circularity),
+            color_contrast=contrast,
             confidence=confidence,
             detected_color=color_name,
             centroid_x=float(centroid_x),
@@ -132,6 +173,33 @@ class Detector:
             height=hsv_frame.shape[0],
         )
 
+    def rejection_reason(self, candidate):
+        if candidate is None:
+            return 'degenerate'
+        if candidate.circularity < self.config.min_circularity:
+            return 'low_circularity'
+        if candidate.color_contrast < self.config.min_color_contrast:
+            return 'low_contrast'
+        if candidate.confidence < self.config.min_confidence:
+            return 'low_confidence'
+        return 'accepted'
+
+    def frame_masks(self, frame_bgr, hsv_frame):
+        if self.config.color_samples_bgr:
+            raw = calibrated_masks(frame_bgr, self.config.color_samples_bgr,
+                                   self.config.color_distance_max, self.config.color_margin)
+        else:
+            raw = {color: self.build_mask(hsv_frame, color, morphology=False)
+                   for color in ('red', 'green', 'blue')}
+        cleaned = {}
+        claimed = np.zeros(frame_bgr.shape[:2], dtype=bool)
+        for color, mask in raw.items():
+            mask = self.clean_mask(mask)
+            mask[claimed] = 0
+            claimed |= mask > 0
+            cleaned[color] = mask
+        return raw, cleaned
+
     def detect_all(self, frame_bgr: np.ndarray, fps: float = 0.0) -> list[DetectionResult]:
         """Return every valid blob, sorted by descending area. No target yields []."""
         if frame_bgr is None:
@@ -143,17 +211,14 @@ class Detector:
 
         hsv_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
 
+        features = color_features(frame_bgr) if self.config.min_color_contrast > 0 else None
+        _, masks = self.frame_masks(frame_bgr, hsv_frame)
         results = []
-        # Give overlapping configured hue ranges a deterministic color owner.
-        claimed = np.zeros(hsv_frame.shape[:2], dtype=bool)
-        for color_name in ("red", "green", "blue"):
-            mask = self.build_mask(hsv_frame, color_name)
-            mask[claimed] = 0
-            claimed |= mask > 0
+        for color_name, mask in masks.items():
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             for contour in contours:
-                candidate = self._measure_candidate(contour, mask, hsv_frame, color_name)
-                if candidate is not None:
+                candidate = self._measure_candidate(contour, mask, hsv_frame, color_name, features)
+                if self.rejection_reason(candidate) == 'accepted':
                     candidate.fps = fps
                     results.append(candidate)
         return sorted(results, key=lambda result: (-result.area, result.detected_color,
