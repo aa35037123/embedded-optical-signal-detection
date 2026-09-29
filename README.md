@@ -4,6 +4,8 @@ A CPU-only OpenCV MVP for detecting all valid red, green, or blue optical
 blobs. No ML is used. Camera capture, detection, and visualization are separate.
 A browser-based signal generator provides a controllable target on a phone.
 
+![Real-time optical target detection demo](assets/demo.gif)
+
 ```text
 BGR frame → HSV → red/green/blue masks + brightness threshold
           → morphology → contours → area and confidence filters → all valid blobs
@@ -56,6 +58,101 @@ embedded-optical-signal-detection/
     └── signal_generator/
         └── index.html
 ```
+
+## Distributed streaming rollout — phases A–E
+
+Phases A–E implement TCP framing, static-image/video and live Pi camera sending,
+CPU detection on the receiver, a bounded latest-frame slot, overlays, and measured
+CSV/JSON profiling. See [network setup and validation](docs/network.md) for
+commands, clock limitations, and troubleshooting. CUDA and CPU/CUDA benchmarking
+remain gated phases. The existing local detector and capture pipeline are
+unchanged. The architecture is:
+
+```text
+Phone optical signal → Raspberry Pi Camera → Picamera2 (BGR)
+  → JPEG encoder → framed TCP stream → Linux workstation
+  → JPEG decoder → OpenCV CPU / CUDA backend
+  → existing optical point detector → visualization + local profiling
+```
+
+Integration points already available:
+
+- `CameraAcquisition.read()` returns a BGR frame, with `stop()` for cleanup.
+- `Detector.detect_all(frame)` returns all valid spots; `detect(frame)` retains
+  the largest-spot compatibility interface.
+- `draw_detections(frame, results, fps)` renders the existing results.
+
+### Protocol v1
+
+Defined in `src/network/protocol.py`, using Python standard-library `struct`.
+Every packet is **40 header bytes followed by exactly `jpeg_size` payload bytes**.
+The struct format is `!4sBBHQQQHHI`: big-endian/network order, unsigned integer
+fields, no implicit padding. There is no pickle or delimiter-based framing.
+
+| Offset | Bytes | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 4 | magic | ASCII `OSIG` |
+| 4 | 1 | version | `1` |
+| 5 | 1 | flags | `0`; other values rejected |
+| 6 | 2 | header_size | `40`; other values rejected |
+| 8 | 8 | frame_id | Increasing uint64 within one TCP connection |
+| 16 | 8 | capture_timestamp_ns | Pi-local `time.monotonic_ns()` immediately after frame acquisition |
+| 24 | 8 | jpeg_encode_ns | Pi-local JPEG encode duration, in nanoseconds |
+| 32 | 2 | width | Source frame width in pixels |
+| 34 | 2 | height | Source frame height in pixels |
+| 36 | 4 | jpeg_size | Encoded JPEG payload length in bytes |
+| 40 | jpeg_size | JPEG payload | Encoded image bytes |
+
+Limits: payload size **1–8 MiB**, each dimension **1–8192**, and at most
+**16,777,216 pixels**. Headers are validated before any payload allocation/read.
+The future receiver must additionally check JPEG decode success and match the
+actual decoded dimensions against the header; transport framing alone cannot
+verify JPEG content. Capture timestamp denotes application acquisition completion,
+not hardware exposure time.
+
+Shared API:
+
+- `FrameHeader`, `pack_header()`, `unpack_header()` for metadata serialization.
+- `recv_exact(socket, n)` handles partial reads without consuming the next packet.
+- `send_packet(socket, header, jpeg_payload)` validates lengths and uses `sendall()`
+  for both header and payload. Use one writer per connection.
+- `receive_packet(socket, sequence)` reads one complete bounded packet.
+- `FrameSequence.observe(id)` returns the gap since the previous ID and accumulates
+  `skipped_frames`. Duplicate/decreasing IDs are rejected. The first ID may be any
+  uint64; senders should start at 0. Create a new tracker for each connection.
+
+`ConnectionClosed` reports expected/received byte counts on EOF, including normal
+EOF between frames. `ProtocolError` reports invalid framing or metadata. Socket
+errors/timeouts propagate to the application, which owns socket timeout settings
+and cleanup. On a partial packet, timeout, or protocol error, close the connection;
+do not scan JPEG contents for a new magic value or resume with a fresh read.
+
+Sequence gaps describe missing **received IDs**. Later latest-frame queue
+replacements must be counted separately as processing skips. The receiver now uses a one-slot latest-frame buffer; see the network guide.
+
+Pi and workstation monotonic timestamps belong to different clocks. Do **not**
+subtract the capture timestamp from a workstation timestamp to claim network or
+end-to-end latency. JPEG encode duration is valid on the Pi; receive/decode/
+processing/visualization durations must be measured locally on the workstation.
+Cross-machine latency needs clock synchronization and an accounted error bound.
+
+### Verify Phase A (no camera or GPU required)
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/test_protocol.py -q
+python -m pytest -q
+```
+
+The protocol tests check exact wire bytes, header round trips, fragmented and
+coalesced reads, invalid magic/version/lengths/dimensions, EOF during frames,
+frame-ID continuity, `sendall` use, and socket error propagation. Byte-stream
+fixtures exercise framing independently of network access or camera hardware.
+These tests are not network throughput or latency benchmarks.
+
+Phases B–E were subsequently validated with static-image loopback tests and live
+IMX219 camera streaming on the Pi. Phase F requires CUDA-capable OpenCV and an
+NVIDIA GPU; phase G requires measured runs of both CPU and CUDA backends.
 
 ## Setup
 
