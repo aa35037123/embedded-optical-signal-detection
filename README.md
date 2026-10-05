@@ -1,163 +1,32 @@
 # Real-Time Embedded Optical Signal Detection
 
-A CPU-only OpenCV MVP for detecting all valid red, green, or blue optical
-blobs. No ML is used. Camera capture, detection, and visualization are separate.
-A browser-based signal generator provides a controllable target on a phone.
+Detect red, green, and blue optical points with a Raspberry Pi camera and OpenCV.
+No ML is used. Choose one of two launch methods:
+
+| Method | Raspberry Pi | PC / GPU workstation |
+| --- | --- | --- |
+| [1. Pi only (CPU)](#method-1-launch-on-the-raspberry-pi-only) | Capture, detect, and display locally | Not needed |
+| [2. Pi → PC(GPU)](#method-2-stream-from-the-pi-to-a-pc--gpu-workstation) | Capture and send JPEG frames over TCP | Receive, detect, display, and profile |
+
+**Current backend support:** both methods use CPU OpenCV. Method 2 runs on a PC
+with an NVIDIA GPU, but CUDA detection is not implemented yet. Having a GPU does
+not automatically enable GPU processing.
 
 ![Real-time optical target detection demo](assets/demo.gif)
 
-```text
-BGR frame → HSV → red/green/blue masks + brightness threshold
-          → morphology → contours → area and confidence filters → all valid blobs
-          → centroid, color, radius, confidence → overlay + JSONL
-```
+Run every command below from the repository root on the indicated machine.
+For test targets, open the [phone signal generator](#optical-signal-generator).
 
-## Project goal
-
-The project currently focuses on these stages:
-
-- capture frames from the Raspberry Pi camera
-- detect multiple red, green, and blue circular targets in real time
-- calculate centroid, normalized position, area, radius, and brightness
-- render a small deterministic overlay for debugging and validation
-- keep detection and visualization separate for future experimentation
-
-The first milestone focused on acquisition:
-
-- initialize the Raspberry Pi camera with Picamera2
-- capture frames at 640x480 resolution
-- target 30 FPS
-- convert frames into OpenCV-compatible BGR format
-- print measured FPS once per second
-- optionally display the live stream with `--display`
-- release resources cleanly on `Ctrl+C`
-
-## Folder structure
+## Method 1: Launch on the Raspberry Pi only
 
 ```text
-embedded-optical-signal-detection/
-├── README.md
-├── requirements.txt
-├── configs/
-│   └── detection.yaml
-├── src/
-│   ├── pipeline.py
-│   ├── capture/
-│   │   ├── __init__.py
-│   │   └── camera.py
-│   ├── detection/
-│   │   ├── __init__.py
-│   │   ├── detector.py
-│   │   └── types.py
-│   └── visualization/
-│       ├── __init__.py
-│       └── overlay.py
-├── tests/
-│   └── test_detector.py
-└── tools/
-    └── signal_generator/
-        └── index.html
+Phone RGB points → Pi camera → Picamera2 → OpenCV detector → Pi display
 ```
 
-## Distributed streaming rollout — phases A–E
+### Set up the Pi (first time)
 
-Phases A–E implement TCP framing, static-image/video and live Pi camera sending,
-CPU detection on the receiver, a bounded latest-frame slot, overlays, and measured
-CSV/JSON profiling. See [network setup and validation](docs/network.md) for
-commands, clock limitations, and troubleshooting. CUDA and CPU/CUDA benchmarking
-remain gated phases. The existing local detector and capture pipeline are
-unchanged. The architecture is:
-
-```text
-Phone optical signal → Raspberry Pi Camera → Picamera2 (BGR)
-  → JPEG encoder → framed TCP stream → Linux workstation
-  → JPEG decoder → OpenCV CPU / CUDA backend
-  → existing optical point detector → visualization + local profiling
-```
-
-Integration points already available:
-
-- `CameraAcquisition.read()` returns a BGR frame, with `stop()` for cleanup.
-- `Detector.detect_all(frame)` returns all valid spots; `detect(frame)` retains
-  the largest-spot compatibility interface.
-- `draw_detections(frame, results, fps)` renders the existing results.
-
-### Protocol v1
-
-Defined in `src/network/protocol.py`, using Python standard-library `struct`.
-Every packet is **40 header bytes followed by exactly `jpeg_size` payload bytes**.
-The struct format is `!4sBBHQQQHHI`: big-endian/network order, unsigned integer
-fields, no implicit padding. There is no pickle or delimiter-based framing.
-
-| Offset | Bytes | Field | Meaning |
-| --- | --- | --- | --- |
-| 0 | 4 | magic | ASCII `OSIG` |
-| 4 | 1 | version | `1` |
-| 5 | 1 | flags | `0`; other values rejected |
-| 6 | 2 | header_size | `40`; other values rejected |
-| 8 | 8 | frame_id | Increasing uint64 within one TCP connection |
-| 16 | 8 | capture_timestamp_ns | Pi-local `time.monotonic_ns()` immediately after frame acquisition |
-| 24 | 8 | jpeg_encode_ns | Pi-local JPEG encode duration, in nanoseconds |
-| 32 | 2 | width | Source frame width in pixels |
-| 34 | 2 | height | Source frame height in pixels |
-| 36 | 4 | jpeg_size | Encoded JPEG payload length in bytes |
-| 40 | jpeg_size | JPEG payload | Encoded image bytes |
-
-Limits: payload size **1–8 MiB**, each dimension **1–8192**, and at most
-**16,777,216 pixels**. Headers are validated before any payload allocation/read.
-The future receiver must additionally check JPEG decode success and match the
-actual decoded dimensions against the header; transport framing alone cannot
-verify JPEG content. Capture timestamp denotes application acquisition completion,
-not hardware exposure time.
-
-Shared API:
-
-- `FrameHeader`, `pack_header()`, `unpack_header()` for metadata serialization.
-- `recv_exact(socket, n)` handles partial reads without consuming the next packet.
-- `send_packet(socket, header, jpeg_payload)` validates lengths and uses `sendall()`
-  for both header and payload. Use one writer per connection.
-- `receive_packet(socket, sequence)` reads one complete bounded packet.
-- `FrameSequence.observe(id)` returns the gap since the previous ID and accumulates
-  `skipped_frames`. Duplicate/decreasing IDs are rejected. The first ID may be any
-  uint64; senders should start at 0. Create a new tracker for each connection.
-
-`ConnectionClosed` reports expected/received byte counts on EOF, including normal
-EOF between frames. `ProtocolError` reports invalid framing or metadata. Socket
-errors/timeouts propagate to the application, which owns socket timeout settings
-and cleanup. On a partial packet, timeout, or protocol error, close the connection;
-do not scan JPEG contents for a new magic value or resume with a fresh read.
-
-Sequence gaps describe missing **received IDs**. Later latest-frame queue
-replacements must be counted separately as processing skips. The receiver now uses a one-slot latest-frame buffer; see the network guide.
-
-Pi and workstation monotonic timestamps belong to different clocks. Do **not**
-subtract the capture timestamp from a workstation timestamp to claim network or
-end-to-end latency. JPEG encode duration is valid on the Pi; receive/decode/
-processing/visualization durations must be measured locally on the workstation.
-Cross-machine latency needs clock synchronization and an accounted error bound.
-
-### Verify Phase A (no camera or GPU required)
-
-```bash
-source .venv/bin/activate
-python -m pytest tests/test_protocol.py -q
-python -m pytest -q
-```
-
-The protocol tests check exact wire bytes, header round trips, fragmented and
-coalesced reads, invalid magic/version/lengths/dimensions, EOF during frames,
-frame-ID continuity, `sendall` use, and socket error propagation. Byte-stream
-fixtures exercise framing independently of network access or camera hardware.
-These tests are not network throughput or latency benchmarks.
-
-Phases B–E were subsequently validated with static-image loopback tests and live
-IMX219 camera streaming on the Pi. Phase F requires CUDA-capable OpenCV and an
-NVIDIA GPU; phase G requires measured runs of both CPU and CUDA backends.
-
-## Setup
-
-On Raspberry Pi OS, install the camera bindings through the system package manager,
-then expose them to the virtual environment:
+Connect the camera and install Picamera2, then create an environment that can
+access the Raspberry Pi system packages:
 
 ```bash
 sudo apt install python3-picamera2
@@ -166,7 +35,48 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-On a desktop, image/video/demo modes do not require Picamera2:
+If this environment is already set up, just run `source .venv/bin/activate`.
+
+### Launch the recommended local configuration
+
+This is the best-working command for the current Pi/IMX219 setup:
+
+```bash
+python -m src.pipeline --display --config configs/detection-red-background.yaml --debug-dir captures/red-debug
+```
+
+- `--display`: show the camera preview and detected points on the Pi.
+- `--config`: use the stricter red-background profile that works best in the
+  current setup. Thresholds can still depend on lighting and camera distance.
+- `--debug-dir`: show color-mask diagnostics and save the last raw frame, masks,
+  and `report.json` under `captures/red-debug` when the run ends.
+
+Default capture is 640×480 with a requested 30 FPS. Actual throughput depends on
+processing and debug overhead. Focus the preview and press **q** or **Escape** to
+exit, or press **Ctrl+C** in the terminal. Debug files overwrite prior captures in
+the same directory.
+
+For a headless SSH session, omit the display window:
+
+```bash
+python -m src.pipeline --config configs/detection-red-background.yaml --debug-dir captures/red-debug
+```
+
+## Method 2: Stream from the Pi to a PC / GPU workstation
+
+```text
+Phone RGB points → Pi camera → Picamera2 → JPEG encoding
+  → TCP → PC JPEG decoding → CPU detector → PC display + CSV profiling
+```
+
+The Pi performs camera capture and JPEG encoding. Detection and visualization
+run on the PC. Use this mode to move processing off the Pi and collect timing
+measurements. Start the PC receiver **before** the Pi sender.
+
+### Set up both machines (first time)
+
+Have the same repository version on both machines. Set up the Pi using the steps
+in Method 1. On the Linux PC, Picamera2 is not required:
 
 ```bash
 python3 -m venv .venv
@@ -174,26 +84,89 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Run the spectrum tracker MVP
+Ensure `configs/detection-red-background.yaml` on the PC contains the settings
+that worked on the Pi; this mode loads the detector configuration on the PC.
 
-Run all commands from the project root. The default source is the Raspberry Pi
-camera at the configured resolution (640×480 by default), requesting 30 FPS:
+### Step 1 — Find the PC's LAN address
+
+On the **PC**, run:
 
 ```bash
-python -m src.pipeline --display
+hostname -I
 ```
 
-Without a desktop/over SSH, omit `--display`. Press Ctrl+C to stop; in the live
-preview, `q` or Escape also exits. A single-image preview waits for a key.
+Choose the address reachable from the Pi, for example `192.168.1.100`. Both machines
+must be able to reach each other over the network. Allow inbound **TCP port 5000**
+on the PC firewall from the Pi. The detailed [network guide](docs/network.md)
+includes firewall and connectivity troubleshooting.
+
+### Step 2 — Start the receiver on the PC
+
+In the repository root on the **PC**:
 
 ```bash
-python -m src.pipeline --jsonl detections.jsonl
+source .venv/bin/activate
+python -m src.network.receiver --bind 0.0.0.0 --port 5000 \
+  --backend cpu --display \
+  --config configs/detection-red-background.yaml \
+  --csv results/network/cpu.csv
+```
+
+Wait for `Listening on 0.0.0.0:5000`. The preview will appear on the PC when
+frames arrive. Omit `--display` if the PC has no graphical session.
+
+### Step 3 — Start the sender on the Pi
+
+Stop the Pi-only pipeline first so it releases the camera. Then, in the repository
+root on the **Pi**, run the following, replacing the example address with your PC's
+LAN address:
+
+```bash
+source .venv/bin/activate
+python -m src.network.sender --host 192.168.1.210 --port 5000 \
+  --width 640 --height 480 --fps 30 --jpeg-quality 85
+```
+
+Do not use `localhost` or `0.0.0.0` as the sender's destination for a remote PC.
+The Pi sender does not run the detector. Use **q/Escape** in the PC preview or
+**Ctrl+C** to stop; the sender also exits and releases the camera on disconnect.
+
+### Results and GPU status
+
+The PC writes measured per-frame timings and detections to
+`results/network/cpu.csv`, plus aggregate statistics to
+`results/network/cpu.summary.json`. These files are overwritten on a new run with
+the same path. A one-slot latest-frame buffer replaces old pending frames if
+processing falls behind, and counts those replacements. Pi and PC timestamps
+have different clock origins; they are not subtracted to claim network latency.
+
+**Use `--backend cpu` for now.** `--backend cuda` is not supported by the current
+receiver. To check prerequisites for the future CUDA backend, run on the
+**NVIDIA PC**, in its project environment:
+
+```bash
+python tools/check_cuda.py
+```
+
+The report is saved to `results/benchmark/cuda-preflight.json`. A positive CUDA
+device count is only a prerequisite; it does not enable a CUDA detector.
+
+See [network setup, validation, and profiling](docs/network.md) for static-image
+and video sender tests, protocol details, timing definitions, and troubleshooting.
+
+## Additional local inputs and output
+
+Run commands from the project root with the virtual environment activated.
+For image/video/webcam experiments, pass the same configuration used by your
+working Pi-only command:
+
+```bash
+python -m src.pipeline --config configs/detection-red-background.yaml --jsonl detections.jsonl
 python -m src.pipeline --demo --display
 python -m src.pipeline --demo --max-frames 90 --jsonl demo.jsonl --output demo.png
-python -m src.pipeline --image test.jpg --output annotated.jpg
-python -m src.pipeline --video recording.mp4 --display
-python -m src.pipeline --webcam 0 --display
-python -m src.pipeline --config configs/detection.yaml --fps 30 --display
+python -m src.pipeline --image test.jpg --config configs/detection-red-background.yaml --output annotated.jpg
+python -m src.pipeline --video recording.mp4 --config configs/detection-red-background.yaml --display
+python -m src.pipeline --webcam 0 --config configs/detection-red-background.yaml --display
 ```
 
 `--output` saves the final annotated image; `--jsonl` writes one record per frame
@@ -338,7 +311,9 @@ color-shift/noise tests pass; live camera calibration is required before judging
 accuracy. `--image` also supports calibration from a saved raw camera frame.
 
 ### Red background contamination
-*This is most precise solution for pi and IMX219 camera module*
+
+This is the preferred profile for the current Pi/IMX219 setup, based on local testing.
+
 If most of the phone is white in the red debug mask, red targets are connected
 to the background instead of forming separate contours. Try the stricter profile:
 
@@ -346,8 +321,18 @@ to the background instead of forming separate contours. Try the stricter profile
 python -m src.pipeline --display --config configs/detection-red-background.yaml --debug-dir captures/red-debug
 ```
 
-This raises only red `value_min` from 60 to 180 and `saturation_min` from 80 to
-140. These are starting values, not calibration from your camera. Keep the phone
+This profile raises red `value_min` from 60 to 180 and `saturation_min` from 80
+to 140. It also allows upper red hues from 166–179 and green hues from 24–89,
+covering the yellow-shifted green dots in the saved camera regression frame.
+`min_circularity: 0.55` and `min_color_contrast: 12` reject thin phone edges and
+weak background fragments. Confidence remains diagnostic-only (`0`) so pale or
+dim targets are not rejected just because of brightness/saturation.
+
+The raw regression image is `tests/fixtures/red_cast_phone.png`; the updated
+profile detects its three red and two green dots without bezel false positives.
+There is no blue target in that capture, so blue thresholds are unchanged. This
+profile filters the image; it does not remove the camera's pink tint. Restart the
+pipeline after editing the YAML. Thresholds still depend on lighting. Keep the phone
 background black and targets bright. The desired red mask has isolated white
 spots against a black phone background. Click both a target and its nearby
 background in the main preview to compare HSV values. Set `value_min` above the
@@ -387,8 +372,8 @@ It can display a configurable colored target that can be observed by the Raspber
 ### Random multi-target scenes
 
 Select **Random scenes**, enter the inclusive target count range **n–m** (0–200)
-and the dwell time in seconds (0.1–3600), then press **套用並換幕** to apply.
-Press **開始自動切換** to cycle scenes and the same button to pause. **下一幕**
+and the dwell time in seconds (0.1–3600), then press **Apply and advance** to apply.
+Press **Start auto-advance** to cycle scenes and the same button to pause. **Next scene / Randomize**
 advances immediately and restarts the dwell timer. Defaults are 1–5 targets and
 3 seconds per scene; automatic switching starts only when requested.
 
@@ -491,5 +476,148 @@ Future milestones will introduce:
 - automatic ground-truth collection
 - communication between the signal generator and detection pipeline
 - experiment logging and evaluation
-- networking to a GPU workstation
+- CPU/CUDA benchmarking on the workstation
 - optional GPU/CUDA acceleration
+
+## Project goal
+
+The project currently focuses on these stages:
+
+- capture frames from the Raspberry Pi camera
+- detect multiple red, green, and blue circular targets in real time
+- calculate centroid, normalized position, area, radius, and brightness
+- render a small deterministic overlay for debugging and validation
+- keep detection and visualization separate for future experimentation
+
+The first milestone focused on acquisition:
+
+- initialize the Raspberry Pi camera with Picamera2
+- capture frames at 640x480 resolution
+- target 30 FPS
+- convert frames into OpenCV-compatible BGR format
+- print measured FPS once per second
+- optionally display the live stream with `--display`
+- release resources cleanly on `Ctrl+C`
+
+## Folder structure
+
+```text
+embedded-optical-signal-detection/
+├── README.md
+├── requirements.txt
+├── configs/
+│   └── detection.yaml
+├── src/
+│   ├── pipeline.py
+│   ├── capture/
+│   │   ├── __init__.py
+│   │   └── camera.py
+│   ├── network/           # TCP sender, receiver, protocol, and JPEG codec
+│   ├── profiling/         # Timing statistics and CSV logs
+│   ├── detection/
+│   │   ├── __init__.py
+│   │   ├── detector.py
+│   │   └── types.py
+│   └── visualization/
+│       ├── __init__.py
+│       └── overlay.py
+├── tests/
+│   └── test_detector.py
+└── tools/
+    └── signal_generator/
+        └── index.html
+```
+
+## Network protocol and architecture
+
+Including implementing TCP framing, static-image/video and live Pi camera sending,
+CPU detection on the receiver, a bounded latest-frame slot, overlays, and measured
+CSV/JSON profiling. See [network setup and validation](docs/network.md) for
+commands, clock limitations, and troubleshooting. CUDA and CPU/CUDA benchmarking
+remain gated phases. The existing local detector and capture pipeline are
+unchanged. The architecture is:
+
+```text
+Phone optical signal → Raspberry Pi Camera → Picamera2 (BGR)
+  → JPEG encoder → framed TCP stream → Linux workstation
+  → JPEG decoder → OpenCV CPU backend (CUDA planned)
+  → existing optical point detector → visualization + local profiling
+```
+
+Integration points already available:
+
+- `CameraAcquisition.read()` returns a BGR frame, with `stop()` for cleanup.
+- `Detector.detect_all(frame)` returns all valid spots; `detect(frame)` retains
+  the largest-spot compatibility interface.
+- `draw_detections(frame, results, fps)` renders the existing results.
+
+### Protocol v1
+
+Defined in `src/network/protocol.py`, using Python standard-library `struct`.
+Every packet is **40 header bytes followed by exactly `jpeg_size` payload bytes**.
+The struct format is `!4sBBHQQQHHI`: big-endian/network order, unsigned integer
+fields, no implicit padding. There is no pickle or delimiter-based framing.
+
+| Offset | Bytes | Field | Meaning |
+| --- | --- | --- | --- |
+| 0 | 4 | magic | ASCII `OSIG` |
+| 4 | 1 | version | `1` |
+| 5 | 1 | flags | `0`; other values rejected |
+| 6 | 2 | header_size | `40`; other values rejected |
+| 8 | 8 | frame_id | Increasing uint64 within one TCP connection |
+| 16 | 8 | capture_timestamp_ns | Pi-local `time.monotonic_ns()` immediately after frame acquisition |
+| 24 | 8 | jpeg_encode_ns | Pi-local JPEG encode duration, in nanoseconds |
+| 32 | 2 | width | Source frame width in pixels |
+| 34 | 2 | height | Source frame height in pixels |
+| 36 | 4 | jpeg_size | Encoded JPEG payload length in bytes |
+| 40 | jpeg_size | JPEG payload | Encoded image bytes |
+
+Limits: payload size **1–8 MiB**, each dimension **1–8192**, and at most
+**16,777,216 pixels**. Headers are validated before any payload allocation/read.
+The receiver also checks JPEG decode success and matches the actual decoded
+dimensions against the header; transport framing alone cannot verify JPEG content. Capture timestamp denotes application acquisition completion,
+not hardware exposure time.
+
+Shared API:
+
+- `FrameHeader`, `pack_header()`, `unpack_header()` for metadata serialization.
+- `recv_exact(socket, n)` handles partial reads without consuming the next packet.
+- `send_packet(socket, header, jpeg_payload)` validates lengths and uses `sendall()`
+  for both header and payload. Use one writer per connection.
+- `receive_packet(socket, sequence)` reads one complete bounded packet.
+- `FrameSequence.observe(id)` returns the gap since the previous ID and accumulates
+  `skipped_frames`. Duplicate/decreasing IDs are rejected. The first ID may be any
+  uint64; senders should start at 0. Create a new tracker for each connection.
+
+`ConnectionClosed` reports expected/received byte counts on EOF, including normal
+EOF between frames. `ProtocolError` reports invalid framing or metadata. Socket
+errors/timeouts propagate to the application, which owns socket timeout settings
+and cleanup. On a partial packet, timeout, or protocol error, close the connection;
+do not scan JPEG contents for a new magic value or resume with a fresh read.
+
+Sequence gaps describe missing **received IDs**. Later latest-frame queue
+replacements must be counted separately as processing skips. The receiver now uses a one-slot latest-frame buffer; see the network guide.
+
+Pi and workstation monotonic timestamps belong to different clocks. Do **not**
+subtract the capture timestamp from a workstation timestamp to claim network or
+end-to-end latency. JPEG encode duration is valid on the Pi; receive/decode/
+processing/visualization durations must be measured locally on the workstation.
+Cross-machine latency needs clock synchronization and an accounted error bound.
+
+### Verify Phase A (no camera or GPU required)
+
+```bash
+source .venv/bin/activate
+python -m pytest tests/test_protocol.py -q
+python -m pytest -q
+```
+
+The protocol tests check exact wire bytes, header round trips, fragmented and
+coalesced reads, invalid magic/version/lengths/dimensions, EOF during frames,
+frame-ID continuity, `sendall` use, and socket error propagation. Byte-stream
+fixtures exercise framing independently of network access or camera hardware.
+These tests are not network throughput or latency benchmarks.
+
+Phases B–E were subsequently validated with static-image loopback tests and live
+IMX219 camera streaming on the Pi. Phase F requires CUDA-capable OpenCV and an
+NVIDIA GPU; phase G requires measured runs of both CPU and CUDA backends.
