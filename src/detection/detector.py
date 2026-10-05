@@ -43,6 +43,7 @@ def load_detection_config(config_path: str | Path | None = None) -> DetectionCon
         min_circularity=float(raw.get("min_circularity", 0.0)),
         min_color_contrast=float(raw.get("min_color_contrast", 0.0)),
         color_samples_bgr=raw.get("color_samples_bgr", {}),
+        preview_color_matrix=raw.get("preview_color_matrix", []),
         color_distance_max=float(raw.get("color_distance_max", 30.0)),
         color_margin=float(raw.get("color_margin", 8.0)),
         morphology=MorphologyConfig(
@@ -73,6 +74,10 @@ class Detector:
             value = getattr(self.config, name)
             if not np.isfinite(value) or value < 0:
                 raise ValueError(f'{name} must be finite and nonnegative.')
+        if self.config.preview_color_matrix:
+            matrix = np.asarray(self.config.preview_color_matrix, dtype=float)
+            if matrix.shape != (3, 4) or not np.isfinite(matrix).all():
+                raise ValueError('preview_color_matrix must be a finite 3x4 matrix.')
         if self.config.color_samples_bgr:
             validate_samples(self.config.color_samples_bgr)
 

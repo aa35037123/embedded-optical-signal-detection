@@ -17,6 +17,7 @@ from src.visualization import draw_detections
 from src.detection.types import DetectionResult
 from src.detection.diagnostics import inspect_frame, describe_color, probe_pixel, save_debug
 from src.detection.calibration import calibrate_frame
+from src.detection.auto_calibration import run_auto_calibration, corrected_preview
 
 
 def parse_args(argv=None):
@@ -36,7 +37,19 @@ def parse_args(argv=None):
                         help='Show RGB rejection diagnostics and save the last raw frame, masks, and report here.')
     parser.add_argument('--calibrate-colors', type=Path,
                         help='Press C to freeze the preview, sample RGB and background, and save a calibrated YAML.')
+    parser.add_argument('--auto-calibrate-colors', type=Path,
+                        help='Sample a known phone chart across frames and save calibration YAML')
+    parser.add_argument('--calibration-frames', type=int, default=20)
+    parser.add_argument('--correct-preview', action='store_true',
+                        help='Apply the saved color correction to the preview only')
+    parser.add_argument('--tuning-file', type=Path, help='Pi camera ISP tuning JSON, e.g. imx219_noir.json (full path).')
     args = parser.parse_args(argv)
+    if args.tuning_file and (args.image or args.video or args.webcam is not None or args.demo):
+        parser.error('--tuning-file requires the Pi camera source')
+    if args.calibration_frames < 5 or args.calibration_frames > 120:
+        parser.error('--calibration-frames must be between 5 and 120')
+    if args.auto_calibrate_colors and (args.calibrate_colors or args.image or args.video or args.webcam is not None or args.demo):
+        parser.error('--auto-calibrate-colors currently requires the Pi camera and cannot combine with manual calibration')
     if args.calibrate_colors:
         args.display = True
     if not np.isfinite(args.fps) or args.fps <= 0 or args.max_frames < 0:
@@ -53,7 +66,11 @@ def demo_frame(index, width, height):
 
 
 def run(args):
+    if args.auto_calibrate_colors:
+        return run_auto_calibration(args)
     detector = Detector(args.config)
+    if args.correct_preview and not detector.config.preview_color_matrix:
+        raise ValueError('This configuration has no validated preview correction; omit --correct-preview or repeat chart calibration.')
     width, height = detector.config.width, detector.config.height
     camera = capture = log = None
     annotated = None
@@ -77,7 +94,7 @@ def run(args):
                 capture.set(cv2.CAP_PROP_FPS, args.fps)
         elif not args.demo:
             from src.capture.camera import CameraAcquisition
-            camera = CameraAcquisition(width, height, args.fps)
+            camera = CameraAcquisition(width, height, args.fps, **({'tuning_file': args.tuning_file} if getattr(args, 'tuning_file', None) else {}))
             camera.start()
 
         # Create the display window once and make it fullscreen
@@ -117,7 +134,8 @@ def run(args):
                 window_start, window_count = now, 0
             for result in results:
                 result.fps = fps
-            annotated = draw_detections(frame, results, fps)
+            preview = corrected_preview(frame, detector.config.preview_color_matrix) if args.correct_preview else frame
+            annotated = draw_detections(preview, results, fps)
             if log:
                 # Preserve the original largest-target fields for existing consumers.
                 largest = results[0] if results else DetectionResult(
@@ -154,6 +172,10 @@ def run(args):
                     print('Click the target in Spectrum Tracker to inspect its BGR/HSV values.', flush=True)
                     debug_windows_ready = True
                 key = cv2.waitKey(0 if args.image else 1) & 0xFF
+                if key == ord('s') and args.debug_dir:
+                    snapshot_dir = args.debug_dir / f'snapshot-{time.time_ns()}'
+                    save_debug(snapshot_dir, detector, frame)
+                    print(f'Current raw frame and diagnostics saved to {snapshot_dir}', flush=True)
                 if key == ord('c') and args.calibrate_colors:
                     if calibrate_frame(frame, args.calibrate_colors, detector.config):
                         print(f'Calibration saved. Run: python -m src.pipeline --display --config {args.calibrate_colors}', flush=True)

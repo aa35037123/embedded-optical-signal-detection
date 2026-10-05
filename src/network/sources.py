@@ -28,7 +28,7 @@ def frames(args):
                 yield cv2.resize(frame, (args.width, args.height))
         else:
             from src.capture.camera import CameraAcquisition
-            camera = CameraAcquisition(args.width, args.height, args.fps)
+            camera = CameraAcquisition(args.width, args.height, args.fps, **({'tuning_file': args.tuning_file} if getattr(args, 'tuning_file', None) else {}))
             while True:
                 yield camera.read()
     finally:

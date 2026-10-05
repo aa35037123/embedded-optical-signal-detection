@@ -1,7 +1,8 @@
 # Bright display targets against the current Pi/IMX219 reddish background.
-# Tuned against tests/fixtures/red_cast_phone.png; not a camera color correction.
+# Tuned against both red_cast_phone*.png regression captures; not a camera color correction.
 # Shape and local-contrast gates reject thin edges and weak background fragments.
-# Green includes the yellow-shifted camera values observed in that capture.
+# Green includes yellow-shifted dots; blue includes purple-shifted dots.
+# Red targets measured near S=255; pink background measured around S=200-220.
 width: 640
 height: 480
 min_area: 50
@@ -18,7 +19,7 @@ colors:
     hue_ranges:
       - [0, 12]
       - [166, 179]
-    saturation_min: 140
+    saturation_min: 230
     saturation_max: 255
     value_min: 180
     value_max: 255
@@ -31,7 +32,7 @@ colors:
     value_max: 255
   blue:
     hue_ranges:
-      - [90, 130]
+      - [90, 150]
     saturation_min: 80
     saturation_max: 255
     value_min: 60

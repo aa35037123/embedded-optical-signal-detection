@@ -53,7 +53,7 @@ def save_calibration(path, config, samples):
     validate_samples(samples)
     data = asdict(config)
     data['colors'] = data.pop('color_thresholds')
-    data.update(color_samples_bgr=samples, min_confidence=0.0,
+    data.update(color_samples_bgr=samples, preview_color_matrix=[], min_confidence=0.0,
                 min_circularity=0.55, min_color_contrast=12.0,
                 color_distance_max=30.0, color_margin=8.0)
     Path(path).parent.mkdir(parents=True, exist_ok=True)

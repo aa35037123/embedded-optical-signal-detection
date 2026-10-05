@@ -9,14 +9,18 @@ from src.detection import Detector
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_red_cast_phone_targets_without_bezel_false_positives():
-    frame = cv2.imread(str(ROOT / 'tests/fixtures/red_cast_phone.png'))
+@pytest.mark.parametrize('filename,expected', [
+    ('red_cast_phone.png', {'red': [(168, 62), (255, 300), (479, 383)],
+                            'green': [(55, 375), (413, 376)]}),
+    ('red_cast_phone_blue.png', {'blue': [(307, 139), (416, 402)],
+                                 'green': [(264, 265)]}),
+])
+def test_red_cast_phone_targets_without_bezel_false_positives(filename, expected):
+    frame = cv2.imread(str(ROOT / 'tests/fixtures' / filename))
     assert frame is not None
     detector = Detector(ROOT / 'configs/detection-red-background.yaml')
     results = detector.detect_all(frame)
-    expected = {'red': [(168, 62), (255, 300), (479, 383)],
-                'green': [(55, 375), (413, 376)]}
-    assert len(results) == 5  # No extra detections along the left/bottom phone bezel.
+    assert len(results) == sum(len(centers) for centers in expected.values())  # No extra detections along the left/bottom phone bezel.
     for color, centers in expected.items():
         detections = sorted((r for r in results if r.detected_color == color), key=lambda r: r.centroid_x)
         assert len(detections) == len(centers)

@@ -39,28 +39,34 @@ If this environment is already set up, just run `source .venv/bin/activate`.
 
 ### Launch the recommended local configuration
 
-This is the best-working command for the current Pi/IMX219 setup:
+The IMX219 NoIR camera produced a much less pink image with its matching ISP
+tuning. Close `rpicam-hello` before launching so it releases the camera:
 
 ```bash
-python -m src.pipeline --display --config configs/detection-red-background.yaml --debug-dir captures/red-debug
+python -m src.pipeline --display \
+  --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json \
+  --config configs/detection-noir.yaml \
+  --debug-dir captures/noir-debug
 ```
 
-- `--display`: show the camera preview and detected points on the Pi.
-- `--config`: use the stricter red-background profile that works best in the
-  current setup. Thresholds can still depend on lighting and camera distance.
-- `--debug-dir`: show color-mask diagnostics and save the last raw frame, masks,
-  and `report.json` under `captures/red-debug` when the run ends.
+- `--tuning-file`: correct camera processing before both detection and display.
+  This path is for Pi 4 and earlier; on Pi 5 use `pisp` instead of `vc4`.
+  Use the file matching your camera model.
+- `--config`: detector thresholds for the corrected image.
+- `--debug-dir`: show color masks and rejection diagnostics; save the last frame,
+  masks, and `report.json` in `captures/noir-debug` when the run ends.
 
-Default capture is 640×480 with a requested 30 FPS. Actual throughput depends on
-processing and debug overhead. Focus the preview and press **q** or **Escape** to
-exit, or press **Ctrl+C** in the terminal. Debug files overwrite prior captures in
-the same directory.
+The tuning must be supplied each launch; running `rpicam-hello` beforehand does
+not configure this process. No chart calibration or `--correct-preview` is needed.
+Avoid old calibrated samples or `detection-red-background.yaml` with this command:
+those settings were fitted to the pink image. The old profile remains available
+for captures made without the camera tuning.
 
-For a headless SSH session, omit the display window:
+Default capture is 640×480 at a requested 30 FPS; debug processing reduces actual
+throughput. Press **q/Escape** or **Ctrl+C** to exit. For headless operation, omit
+`--display`. Debug files overwrite previous captures in the same directory.
 
-```bash
-python -m src.pipeline --config configs/detection-red-background.yaml --debug-dir captures/red-debug
-```
+For missed red points, see [Adjust red detection](#adjust-red-detection).
 
 ## Method 2: Stream from the Pi to a PC / GPU workstation
 
@@ -84,7 +90,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Ensure `configs/detection-red-background.yaml` on the PC contains the settings
+Ensure `configs/detection-noir.yaml` on the PC contains the settings
 that worked on the Pi; this mode loads the detector configuration on the PC.
 
 ### Step 1 — Find the PC's LAN address
@@ -108,7 +114,7 @@ In the repository root on the **PC**:
 source .venv/bin/activate
 python -m src.network.receiver --bind 0.0.0.0 --port 5000 \
   --backend cpu --display \
-  --config configs/detection-red-background.yaml \
+  --config configs/detection-noir.yaml \
   --csv results/network/cpu.csv
 ```
 
@@ -124,11 +130,13 @@ LAN address:
 ```bash
 source .venv/bin/activate
 python -m src.network.sender --host 192.168.1.210 --port 5000 \
-  --width 640 --height 480 --fps 30 --jpeg-quality 85
+  --width 640 --height 480 --fps 30 --jpeg-quality 85 \
+  --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json
 ```
 
 Do not use `localhost` or `0.0.0.0` as the sender's destination for a remote PC.
-The Pi sender does not run the detector. Use **q/Escape** in the PC preview or
+The Pi sender applies camera tuning before encoding; the PC loads the detector
+thresholds. Use `pisp` instead of `vc4` on Pi 5. The Pi sender does not run the detector. Use **q/Escape** in the PC preview or
 **Ctrl+C** to stop; the sender also exits and releases the camera on disconnect.
 
 ### Results and GPU status
@@ -242,7 +250,10 @@ which red thresholds it fails. Console diagnostics report matched pixel counts
 and accepted, too-small, and too-large contours. On exit (`q` or Ctrl+C), the
 last unannotated frame, all color masks, and `report.json` are saved in the chosen
 directory, overwriting previous debug captures there. Debugging adds processing
-overhead. Headless capture is also supported:
+overhead. Press **S** in the main preview to save the current raw frame, masks,
+and report in a timestamped subdirectory of `--debug-dir`. Use this while a dot
+is missed so the saved evidence matches the failing scene; normal exit saves
+only the final scene. Headless capture is also supported:
 
 ```bash
 python -m src.pipeline --max-frames 90 --debug-dir captures/red-debug
@@ -310,6 +321,136 @@ exclude background objects identical in color and shape to targets. Synthetic
 color-shift/noise tests pass; live camera calibration is required before judging
 accuracy. `--image` also supports calibration from a saved raw camera frame.
 
+### NoIR camera: correct the pink cast at capture
+
+If the IMX219 NoIR tuning improves `rpicam-hello`, close that preview and use
+the same tuning in the detector. This requires no chart calibration:
+
+```bash
+python -m src.pipeline --display \
+  --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json \
+  --config configs/detection-noir.yaml --debug-dir captures/noir-debug
+```
+
+Use `pisp` instead of `vc4` on Pi 5. Select the tuning matching your camera.
+The camera loads the tuning before capture; detection, preview, debug images,
+and network frames all receive the resulting BGR pixels. It is not a preview-only
+correction. A missing or invalid file fails rather than silently using default tuning.
+The previous `rpicam-hello` command does not persist settings for this process.
+
+For Pi-to-PC processing, add the same `--tuning-file` option to
+`python -m src.network.sender --host PC_IP` on the Pi, and use
+`--config configs/detection-noir.yaml` on the PC receiver.
+The NoIR detector profile uses ordinary HSV ranges plus shape/local-contrast
+filtering. Its thresholds are a starting point requiring live validation;
+the red-background profile and old color samples were fitted to different pixels.
+
+### Adjust red detection
+
+Yes: edit `colors.red` in `configs/detection-noir.yaml`, then restart the
+pipeline. The YAML is loaded at startup, not watched for changes. For network
+processing, edit the receiver's config on the PC and restart the receiver.
+
+First run with `--display --debug-dir captures/noir-debug` and click inside a
+missed red dot in **Spectrum Tracker**. The terminal prints its BGR/HSV values
+and which red threshold failed. Sample several pixels inside the colored part;
+a white highlight or an edge may not represent the dot. Press **S** while the
+preview is focused to save a snapshot and its rejection report.
+
+The current red settings are:
+
+```yaml
+colors:
+  red:
+    hue_ranges:
+      - [0, 12]
+      - [168, 180]
+    saturation_min: 80
+    saturation_max: 255
+    value_min: 60
+    value_max: 255
+```
+
+OpenCV's 8-bit HSV hue values are 0–179; the upper bound 180 includes the end
+of that range. Red wraps around zero, so keep both hue intervals.
+Saturation and brightness use 0–255. All three checks must pass.
+
+| Diagnostic | Adjustment to try | Tradeoff |
+| --- | --- | --- |
+| Brightness below 60 | Lower red `value_min` to 45, then 35 only if needed | Admits darker background pixels |
+| Saturation below 80 | Lower red `saturation_min` to 60 | Admits more dull or nearly neutral pixels |
+| Hue just outside the ranges | Try `[0, 18]` and `[165, 180]` | Admits more orange and magenta |
+| `too_small` in the report | Lower global `min_area` from 50 to 30 | Admits smaller noise blobs |
+| Dot exists in threshold mask but disappears after morphology | Try global `open_kernel: 1` instead of 3 | Keeps more isolated noise |
+| `low_contrast` | Try global `min_color_contrast: 8.0` instead of 12.0 | Admits targets less distinct from their surroundings |
+| `low_circularity` | Check focus and viewing angle before lowering global `min_circularity` | Looser limits admit more irregular background shapes |
+
+Change only the setting supported by the diagnostic, then compare misses and
+false detections under the same lighting. Red HSV edits affect red only;
+area, morphology, circularity, and contrast settings affect all three colors.
+A white dot in the red threshold mask already passed HSV: lowering brightness
+will not fix a subsequent contour rejection. Avoid widening every limit at once.
+
+### Automatic sampling from a reference chart
+
+Use this when manual single-pixel calibration is inconsistent. The program needs
+known source colors: arbitrary first frames cannot establish whether an observed
+purple object was originally blue, red, or background. This workflow automates
+sampling over multiple frames using the entire camera view, with no corner clicks or confirmation keys.
+It is guided calibration, not unsupervised recognition of an unknown scene.
+
+1. Start the existing phone web server, open the signal generator, and choose
+   **Open automatic calibration chart**. The chart inherits the generator's
+   brightness setting. Fill the camera view with the chart, upright and facing the
+   camera: red/green/blue across the top, black/gray/white across the bottom.
+   Keep the phone's physical brightness unchanged. Hide instructions on the chart.
+2. Run on the Pi:
+
+   ```bash
+   python -m src.pipeline --auto-calibrate-colors configs/camera-auto.yaml
+   ```
+
+3. Capture starts automatically: 30 settling frames followed by 20 sample frames,
+   then the YAML is saved. Keep the camera and phone still. Preview boxes show
+   the fixed sampling areas; each must sit inside its matching chart patch.
+   **Q/Escape** cancels without saving. Use `--calibration-frames 30` for more samples.
+4. Return the phone to the signal generator and run:
+
+   ```bash
+   python -m src.pipeline --display --config configs/camera-auto.yaml --debug-dir captures/auto-calibrated
+   ```
+
+The program uses the whole frame as a 3-by-2 chart and samples the centers of its
+red/green/blue/black/gray/white patches across frames, and uses stable RGB/black
+samples for the existing calibrated detector. Distinct color classes and temporal
+stability are checked before replacing the output YAML. Several samples per color
+are retained to cover modest variation; this is not continuous online adaptation.
+Your existing `configs/camera-colors.yaml` is untouched by the commands above.
+
+An optional black-offset plus color-matrix correction is fitted from the chart.
+If independent gray/white checks pass, the file contains `preview_color_matrix`.
+To display that approximate corrected image:
+
+```bash
+python -m src.pipeline --display --config configs/camera-auto.yaml --correct-preview
+```
+
+`--correct-preview` affects only the displayed/annotated image. Detection and debug
+pixel measurements still use the original BGR frame and its calibrated samples,
+so changing the preview cannot silently change classification. If the correction
+is unstable or neutral checks fail, calibration still saves color samples but
+omits the preview matrix and prints a message; run without `--correct-preview`.
+This is reference-based visual normalization, not recovery of physically accurate
+colors under unknown infrared illumination.
+
+Keep illumination, screen brightness, camera position, and camera color response
+stable between calibration and detection. Camera auto exposure/white balance are
+not locked by this workflow and may change when the chart is removed; if the
+appearance changes significantly, the saved samples may no longer apply. Recheck
+raw debug frames instead of assuming that a neutral-looking preview guarantees
+correct detection. The automated capture workflow and color fit are tested with
+synthetic inputs; this chart procedure still needs validation on your live setup.
+
 ### Red background contamination
 
 This is the preferred profile for the current Pi/IMX219 setup, based on local testing.
@@ -322,15 +463,17 @@ python -m src.pipeline --display --config configs/detection-red-background.yaml 
 ```
 
 This profile raises red `value_min` from 60 to 180 and `saturation_min` from 80
-to 140. It also allows upper red hues from 166–179 and green hues from 24–89,
-covering the yellow-shifted green dots in the saved camera regression frame.
+to 230. It also allows upper red hues from 166–179 and green hues from 24–89,
+covering the yellow-shifted green dots in the saved camera regression frames.
+Blue spans 90–150 to include the purple-shifted blue dots measured at hues 138–146.
 `min_circularity: 0.55` and `min_color_contrast: 12` reject thin phone edges and
 weak background fragments. Confidence remains diagnostic-only (`0`) so pale or
 dim targets are not rejected just because of brightness/saturation.
 
 The raw regression image is `tests/fixtures/red_cast_phone.png`; the updated
 profile detects its three red and two green dots without bezel false positives.
-There is no blue target in that capture, so blue thresholds are unchanged. This
+A second regression image, `tests/fixtures/red_cast_phone_blue.png`, contains
+two blue dots and one green dot; all three are detected without extra detections. This
 profile filters the image; it does not remove the camera's pink tint. Restart the
 pipeline after editing the YAML. Thresholds still depend on lighting. Keep the phone
 background black and targets bright. The desired red mask has isolated white

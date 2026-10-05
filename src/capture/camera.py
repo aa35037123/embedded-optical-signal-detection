@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -26,13 +27,20 @@ class CameraAcquisition:
     extend later for buffering or streaming to a workstation.
     """
 
-    def __init__(self, width: int = 640, height: int = 480, fps: int = 30) -> None:
+    def __init__(self, width: int = 640, height: int = 480, fps: int = 30,
+                 tuning_file: str | Path | None = None) -> None:
         self.width = width
         self.height = height
         self.target_fps = fps
         from picamera2 import Picamera2
 
-        self.camera = Picamera2()
+        if tuning_file is None:
+            self.camera = Picamera2()
+        else:
+            path = Path(tuning_file).expanduser().resolve(strict=True)
+            tuning = Picamera2.load_tuning_file(str(path))
+            self.camera = Picamera2(tuning=tuning)
+            print(f'Camera tuning: {path}', flush=True)
         self._running = False
 
     def configure(self) -> None:
@@ -151,13 +159,14 @@ def parse_args() -> argparse.Namespace:
         default=30,
         help="Target camera FPS (default: 30).",
     )
+    parser.add_argument('--tuning-file', type=Path, help='Picamera2 ISP tuning JSON.')
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     print(f"Starting acquisition at {args.width}x{args.height} @ {args.fps} FPS")
-    acquisition = CameraAcquisition(width=args.width, height=args.height, fps=args.fps)
+    acquisition = CameraAcquisition(width=args.width, height=args.height, fps=args.fps, tuning_file=args.tuning_file)
 
     try:
         acquisition.capture_loop(display=args.display)

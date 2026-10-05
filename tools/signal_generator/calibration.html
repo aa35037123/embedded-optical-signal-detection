@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Camera calibration chart</title>
+<style>
+html, body { margin: 0; height: 100%; background: #222; color: white; font-family: sans-serif; }
+#chart { position: absolute; inset: 0; display: grid; grid-template-columns: repeat(3,1fr); grid-template-rows: repeat(2,1fr); }
+.patch { position: relative; }
+.patch span { position: absolute; left: 5px; top: 5px; font-size: 12px; padding: 2px; background: #000; color: #fff; }
+#help { position: absolute; z-index: 2; left: 0; top: 0; background: #222; padding: 10px; max-width: 95vw; }
+button, a { color: white; background: #333; padding: 8px; }
+</style>
+</head>
+<body>
+<div id="help">
+Fill the camera view with this chart, upright: RED GREEN BLUE above BLACK GRAY WHITE. Keep the phone still; the Pi samples automatically.<br>
+Keep the same screen brightness for calibration and detection. Tap Hide instructions before sampling.
+<button id="hide">Hide instructions</button>
+<button id="fullscreen">Fullscreen</button>
+<a href="index.html">Return to generator</a>
+</div>
+<div id="chart" aria-label="Calibration chart: red green blue, black gray white">
+<div class="patch" style="background:rgb(255,0,0)"><span>RED / top-left</span></div>
+<div class="patch" style="background:rgb(0,255,0)"><span>GREEN</span></div>
+<div class="patch" style="background:rgb(0,0,255)"><span>BLUE / top-right</span></div>
+<div class="patch" style="background:rgb(0,0,0)"><span>BLACK / bottom-left</span></div>
+<div class="patch" style="background:rgb(128,128,128)"><span>GRAY</span></div>
+<div class="patch" style="background:rgb(255,255,255)"><span>WHITE / bottom-right</span></div>
+</div>
+<script>
+const requested = Number(new URLSearchParams(location.search).get('brightness') || 80);
+const brightness = Number.isFinite(requested) ? Math.max(1, Math.min(100, requested)) : 80;
+const patches = [[255,0,0],[0,255,0],[0,0,255],[0,0,0],[128,128,128],[255,255,255]];
+document.querySelectorAll('.patch').forEach((patch,index) => {
+  patch.style.background = `rgb(${patches[index].map(v => Math.round(v * brightness / 100)).join(',')})`;
+});
+document.getElementById('hide').onclick = () => document.getElementById('help').hidden = true;
+document.getElementById('chart').onclick = () => document.getElementById('help').hidden = false;
+document.getElementById('fullscreen').onclick = async () => {
+  try { await document.documentElement.requestFullscreen(); } catch (_) { /* Chart works without fullscreen. */ }
+};
+</script>
+</body>
+</html>
