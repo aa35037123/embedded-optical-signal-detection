@@ -216,8 +216,12 @@ class Detector:
 
         hsv_frame = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2HSV)
 
-        features = color_features(frame_bgr) if self.config.min_color_contrast > 0 else None
         _, masks = self.frame_masks(frame_bgr, hsv_frame)
+        return self.detect_from_masks(frame_bgr, hsv_frame, masks, fps)
+
+    def detect_from_masks(self, frame_bgr, hsv_frame, masks, fps=0.0):
+        """Shared CPU contour measurement for CPU and CUDA-generated masks."""
+        features = color_features(frame_bgr) if self.config.min_color_contrast > 0 else None
         results = []
         for color_name, mask in masks.items():
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)

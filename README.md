@@ -1,16 +1,19 @@
 # Real-Time Embedded Optical Signal Detection
 
 Detect red, green, and blue optical points with a Raspberry Pi camera and OpenCV.
-No ML is used. Choose one of two launch methods:
+No ML is used. Choose one of three launch methods:
 
 | Method | Raspberry Pi | PC / GPU workstation |
 | --- | --- | --- |
 | [1. Pi only (CPU)](#method-1-launch-on-the-raspberry-pi-only) | Capture, detect, and display locally | Not needed |
 | [2. Pi → PC(GPU)](#method-2-stream-from-the-pi-to-a-pc--gpu-workstation) | Capture and send JPEG frames over TCP | Receive, detect, display, and profile |
+| [3. Pi → PC CUDA](docs/cuda.md) | Capture and send JPEG frames | GPU HSV/morphology, CPU contour filtering |
 
-**Current backend support:** both methods use CPU OpenCV. Method 2 runs on a PC
-with an NVIDIA GPU, but CUDA detection is not implemented yet. Having a GPU does
-not automatically enable GPU processing.
+**Backend support:** Methods 1 and 2 use CPU OpenCV. [Method 3: Pi → PC CUDA](docs/cuda.md)
+uses the new hybrid GPU backend. It requires CUDA-enabled OpenCV on an NVIDIA PC.
+GPU accuracy and speed still require hardware validation; the development
+environment has no usable CUDA device. See the guide for build, validation,
+launch, and benchmark instructions.
 
 ![Real-time optical target detection demo](assets/demo.gif)
 
@@ -148,9 +151,8 @@ the same path. A one-slot latest-frame buffer replaces old pending frames if
 processing falls behind, and counts those replacements. Pi and PC timestamps
 have different clock origins; they are not subtracted to claim network latency.
 
-**Use `--backend cpu` for now.** `--backend cuda` is not supported by the current
-receiver. To check prerequisites for the future CUDA backend, run on the
-**NVIDIA PC**, in its project environment:
+**Method 2 uses `--backend cpu`.** For Method 3, follow [the CUDA guide](docs/cuda.md).
+Check prerequisites on the **NVIDIA PC**, in its CUDA environment:
 
 ```bash
 python tools/check_cuda.py
@@ -676,14 +678,14 @@ embedded-optical-signal-detection/
 Including implementing TCP framing, static-image/video and live Pi camera sending,
 CPU detection on the receiver, a bounded latest-frame slot, overlays, and measured
 CSV/JSON profiling. See [network setup and validation](docs/network.md) for
-commands, clock limitations, and troubleshooting. CUDA and CPU/CUDA benchmarking
-remain gated phases. The existing local detector and capture pipeline are
+commands, clock limitations, and troubleshooting. The new [CUDA backend and
+benchmark guide](docs/cuda.md) describes the hardware validation gates. The existing local detector and capture pipeline are
 unchanged. The architecture is:
 
 ```text
 Phone optical signal → Raspberry Pi Camera → Picamera2 (BGR)
   → JPEG encoder → framed TCP stream → Linux workstation
-  → JPEG decoder → OpenCV CPU backend (CUDA planned)
+  → JPEG decoder → OpenCV CPU or hybrid CUDA backend
   → existing optical point detector → visualization + local profiling
 ```
 

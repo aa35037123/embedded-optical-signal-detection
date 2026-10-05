@@ -41,4 +41,7 @@ class CPUBackend(DetectionBackend):
 def create_backend(name, config=None):
     if name == 'cpu':
         return CPUBackend(config)
+    if name == 'cuda':
+        from .cuda_backend import CUDABackend
+        return CUDABackend(config)
     raise ValueError(f'Unknown backend: {name}')
