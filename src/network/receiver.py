@@ -106,6 +106,7 @@ def run(args):
                             if logger:
                                 largest = processed.detections[0] if processed.detections else None
                                 logger.write({
+                                    'completed_timestamp_ns': finished_ns,
                                     'session_id': session_id, 'frame_id': packet.header.frame_id,
                                     'capture_timestamp_ns': packet.header.capture_timestamp_ns,
                                     'jpeg_encode_ms': packet.header.jpeg_encode_ns / 1e6,

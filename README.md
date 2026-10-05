@@ -15,6 +15,8 @@ GPU accuracy and speed still require hardware validation; the development
 environment has no usable CUDA device. See the guide for build, validation,
 launch, and benchmark instructions.
 
+For a repeatable three-method comparison, see [performance and accuracy experiments](docs/experiments.md): trial commands, CSV summaries, precision/recall, and position error.
+
 ![Real-time optical target detection demo](assets/demo.gif)
 
 Run every command below from the repository root on the indicated machine.

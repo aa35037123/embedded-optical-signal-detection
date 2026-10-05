@@ -61,7 +61,7 @@ class Metrics:
             }
 
 
-CSV_FIELDS = ('session_id', 'frame_id', 'capture_timestamp_ns', 'jpeg_encode_ms', 'jpeg_size_bytes',
+CSV_FIELDS = ('completed_timestamp_ns', 'capture_read_ms', 'local_pipeline_ms', 'session_id', 'frame_id', 'capture_timestamp_ns', 'jpeg_encode_ms', 'jpeg_size_bytes',
               'receive_timestamp_ns', 'decode_ms', 'upload_ms', 'processing_ms', 'download_ms',
               'visualization_ms', 'total_workstation_ms', 'queue_wait_ms', 'local_receive_to_done_ms',
               'backend', 'detected', 'predicted_color', 'predicted_x', 'predicted_y', 'detections_json')

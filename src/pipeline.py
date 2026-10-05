@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 import yaml
 
+from src.profiling.metrics import CSVLogger
 from src.detection import Detector
 from src.visualization import draw_detections
 from src.detection.types import DetectionResult
@@ -32,6 +33,7 @@ def parse_args(argv=None):
     parser.add_argument('--fps', type=float, default=30, help='Requested camera/demo FPS.')
     parser.add_argument('--max-frames', type=int, default=0, help='Stop after N frames; 0 means unlimited.')
     parser.add_argument('--output', type=Path, help='Save the last annotated frame as an image.')
+    parser.add_argument('--csv', type=Path, help='Per-frame performance measurements for experiments.')
     parser.add_argument('--jsonl', type=Path, help='Write every detection to a JSON-lines file.')
     parser.add_argument('--debug-dir', type=Path,
                         help='Show RGB rejection diagnostics and save the last raw frame, masks, and report here.')
@@ -72,12 +74,14 @@ def run(args):
     if args.correct_preview and not detector.config.preview_color_matrix:
         raise ValueError('This configuration has no validated preview correction; omit --correct-preview or repeat chart calibration.')
     width, height = detector.config.width, detector.config.height
-    camera = capture = log = None
+    camera = capture = log = performance_log = None
     annotated = None
     debug_frame = None
     debug_windows_ready = False
     count, fps = 0, 0.0
     try:
+        if args.csv:
+            performance_log = CSVLogger(args.csv)
         if args.jsonl:
             log = args.jsonl.open('w', encoding='utf-8')
         if args.image:
@@ -123,7 +127,9 @@ def run(args):
                     raise RuntimeError('Source returned no frame')
             else:
                 frame = camera.read()
+            capture_done = time.perf_counter()
             results = detector.detect_all(frame)
+            detection_done = time.perf_counter()
             if args.debug_dir:
                 debug_frame = frame.copy()
             count += 1
@@ -144,7 +150,7 @@ def run(args):
                                       'count': len(results),
                                       'detections': [asdict(result) for result in results]}) + '\n')
             if args.image or now - last_report >= 1:
-                print(f'Targets: {len(results)} | FPS: {fps:.1f}', flush=True)
+                print(f'Frame {count-1} | Targets: {len(results)} | FPS: {fps:.1f}', flush=True)
                 for index, result in enumerate(results, 1):
                     print(f'#{index} Color: {result.detected_color.upper()} | '
                           f'Position: ({result.centroid_x:.0f}, {result.centroid_y:.0f}) | '
@@ -159,6 +165,7 @@ def run(args):
                             cv2.imshow(f'{color}: color threshold', masks[f'{color}-threshold'])
                             cv2.imshow(f'{color}: after morphology', masks[f'{color}-morphology'])
                 last_report = now
+            key = -1
             if args.display:
                 if args.calibrate_colors:
                     cv2.putText(annotated, 'C: freeze for color calibration', (16, 78),
@@ -180,8 +187,20 @@ def run(args):
                     if calibrate_frame(frame, args.calibrate_colors, detector.config):
                         print(f'Calibration saved. Run: python -m src.pipeline --display --config {args.calibrate_colors}', flush=True)
                         break
-                if key in (ord('q'), 27):
-                    break
+            completed_ns = time.perf_counter_ns()
+            if performance_log:
+                performance_log.write({
+                    'completed_timestamp_ns': completed_ns,
+                    'session_id': 1, 'frame_id': count-1, 'backend': 'cpu',
+                    'capture_read_ms': (capture_done-started)*1000,
+                    'processing_ms': (detection_done-capture_done)*1000,
+                    'upload_ms': 0, 'download_ms': 0,
+                    'visualization_ms': (completed_ns/1e9-detection_done)*1000,
+                    'local_pipeline_ms': (completed_ns/1e9-started)*1000,
+                    'detections_json': json.dumps([asdict(r) for r in results]),
+                })
+            if key in (ord('q'), 27):
+                break
             if args.image or (args.max_frames and count >= args.max_frames):
                 break
             if args.demo:
@@ -195,6 +214,8 @@ def run(args):
             capture.release()
         if log is not None:
             log.close()
+        if performance_log is not None:
+            performance_log.close()
         if args.display:
             cv2.destroyAllWindows()
     if args.debug_dir and debug_frame is not None:
