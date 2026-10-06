@@ -12,11 +12,13 @@ import cv2
 import numpy as np
 import yaml
 
+from src.profiling.metrics import CSVLogger
 from src.detection import Detector
 from src.visualization import draw_detections
 from src.detection.types import DetectionResult
 from src.detection.diagnostics import inspect_frame, describe_color, probe_pixel, save_debug
 from src.detection.calibration import calibrate_frame
+from src.detection.auto_calibration import run_auto_calibration, corrected_preview
 
 
 def parse_args(argv=None):
@@ -31,12 +33,25 @@ def parse_args(argv=None):
     parser.add_argument('--fps', type=float, default=30, help='Requested camera/demo FPS.')
     parser.add_argument('--max-frames', type=int, default=0, help='Stop after N frames; 0 means unlimited.')
     parser.add_argument('--output', type=Path, help='Save the last annotated frame as an image.')
+    parser.add_argument('--csv', type=Path, help='Per-frame performance measurements for experiments.')
     parser.add_argument('--jsonl', type=Path, help='Write every detection to a JSON-lines file.')
     parser.add_argument('--debug-dir', type=Path,
                         help='Show RGB rejection diagnostics and save the last raw frame, masks, and report here.')
     parser.add_argument('--calibrate-colors', type=Path,
                         help='Press C to freeze the preview, sample RGB and background, and save a calibrated YAML.')
+    parser.add_argument('--auto-calibrate-colors', type=Path,
+                        help='Sample a known phone chart across frames and save calibration YAML')
+    parser.add_argument('--calibration-frames', type=int, default=20)
+    parser.add_argument('--correct-preview', action='store_true',
+                        help='Apply the saved color correction to the preview only')
+    parser.add_argument('--tuning-file', type=Path, help='Pi camera ISP tuning JSON, e.g. imx219_noir.json (full path).')
     args = parser.parse_args(argv)
+    if args.tuning_file and (args.image or args.video or args.webcam is not None or args.demo):
+        parser.error('--tuning-file requires the Pi camera source')
+    if args.calibration_frames < 5 or args.calibration_frames > 120:
+        parser.error('--calibration-frames must be between 5 and 120')
+    if args.auto_calibrate_colors and (args.calibrate_colors or args.image or args.video or args.webcam is not None or args.demo):
+        parser.error('--auto-calibrate-colors currently requires the Pi camera and cannot combine with manual calibration')
     if args.calibrate_colors:
         args.display = True
     if not np.isfinite(args.fps) or args.fps <= 0 or args.max_frames < 0:
@@ -53,14 +68,20 @@ def demo_frame(index, width, height):
 
 
 def run(args):
+    if args.auto_calibrate_colors:
+        return run_auto_calibration(args)
     detector = Detector(args.config)
+    if args.correct_preview and not detector.config.preview_color_matrix:
+        raise ValueError('This configuration has no validated preview correction; omit --correct-preview or repeat chart calibration.')
     width, height = detector.config.width, detector.config.height
-    camera = capture = log = None
+    camera = capture = log = performance_log = None
     annotated = None
     debug_frame = None
     debug_windows_ready = False
     count, fps = 0, 0.0
     try:
+        if args.csv:
+            performance_log = CSVLogger(args.csv)
         if args.jsonl:
             log = args.jsonl.open('w', encoding='utf-8')
         if args.image:
@@ -77,7 +98,7 @@ def run(args):
                 capture.set(cv2.CAP_PROP_FPS, args.fps)
         elif not args.demo:
             from src.capture.camera import CameraAcquisition
-            camera = CameraAcquisition(width, height, args.fps)
+            camera = CameraAcquisition(width, height, args.fps, **({'tuning_file': args.tuning_file} if getattr(args, 'tuning_file', None) else {}))
             camera.start()
 
         # Create the display window once and make it fullscreen
@@ -106,7 +127,9 @@ def run(args):
                     raise RuntimeError('Source returned no frame')
             else:
                 frame = camera.read()
+            capture_done = time.perf_counter()
             results = detector.detect_all(frame)
+            detection_done = time.perf_counter()
             if args.debug_dir:
                 debug_frame = frame.copy()
             count += 1
@@ -117,7 +140,8 @@ def run(args):
                 window_start, window_count = now, 0
             for result in results:
                 result.fps = fps
-            annotated = draw_detections(frame, results, fps)
+            preview = corrected_preview(frame, detector.config.preview_color_matrix) if args.correct_preview else frame
+            annotated = draw_detections(preview, results, fps)
             if log:
                 # Preserve the original largest-target fields for existing consumers.
                 largest = results[0] if results else DetectionResult(
@@ -126,7 +150,7 @@ def run(args):
                                       'count': len(results),
                                       'detections': [asdict(result) for result in results]}) + '\n')
             if args.image or now - last_report >= 1:
-                print(f'Targets: {len(results)} | FPS: {fps:.1f}', flush=True)
+                print(f'Frame {count-1} | Targets: {len(results)} | FPS: {fps:.1f}', flush=True)
                 for index, result in enumerate(results, 1):
                     print(f'#{index} Color: {result.detected_color.upper()} | '
                           f'Position: ({result.centroid_x:.0f}, {result.centroid_y:.0f}) | '
@@ -141,6 +165,7 @@ def run(args):
                             cv2.imshow(f'{color}: color threshold', masks[f'{color}-threshold'])
                             cv2.imshow(f'{color}: after morphology', masks[f'{color}-morphology'])
                 last_report = now
+            key = -1
             if args.display:
                 if args.calibrate_colors:
                     cv2.putText(annotated, 'C: freeze for color calibration', (16, 78),
@@ -154,12 +179,28 @@ def run(args):
                     print('Click the target in Spectrum Tracker to inspect its BGR/HSV values.', flush=True)
                     debug_windows_ready = True
                 key = cv2.waitKey(0 if args.image else 1) & 0xFF
+                if key == ord('s') and args.debug_dir:
+                    snapshot_dir = args.debug_dir / f'snapshot-{time.time_ns()}'
+                    save_debug(snapshot_dir, detector, frame)
+                    print(f'Current raw frame and diagnostics saved to {snapshot_dir}', flush=True)
                 if key == ord('c') and args.calibrate_colors:
                     if calibrate_frame(frame, args.calibrate_colors, detector.config):
                         print(f'Calibration saved. Run: python -m src.pipeline --display --config {args.calibrate_colors}', flush=True)
                         break
-                if key in (ord('q'), 27):
-                    break
+            completed_ns = time.perf_counter_ns()
+            if performance_log:
+                performance_log.write({
+                    'completed_timestamp_ns': completed_ns,
+                    'session_id': 1, 'frame_id': count-1, 'backend': 'cpu',
+                    'capture_read_ms': (capture_done-started)*1000,
+                    'processing_ms': (detection_done-capture_done)*1000,
+                    'upload_ms': 0, 'download_ms': 0,
+                    'visualization_ms': (completed_ns/1e9-detection_done)*1000,
+                    'local_pipeline_ms': (completed_ns/1e9-started)*1000,
+                    'detections_json': json.dumps([asdict(r) for r in results]),
+                })
+            if key in (ord('q'), 27):
+                break
             if args.image or (args.max_frames and count >= args.max_frames):
                 break
             if args.demo:
@@ -173,6 +214,8 @@ def run(args):
             capture.release()
         if log is not None:
             log.close()
+        if performance_log is not None:
+            performance_log.close()
         if args.display:
             cv2.destroyAllWindows()
     if args.debug_dir and debug_frame is not None:

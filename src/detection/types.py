@@ -35,6 +35,7 @@ class DetectionConfig:
     min_circularity: float = 0.0
     min_color_contrast: float = 0.0
     color_samples_bgr: dict[str, list[list[int]]] = field(default_factory=dict)
+    preview_color_matrix: list[list[float]] = field(default_factory=list)
     color_distance_max: float = 30.0
     color_margin: float = 8.0
     morphology: MorphologyConfig = field(default_factory=MorphologyConfig)

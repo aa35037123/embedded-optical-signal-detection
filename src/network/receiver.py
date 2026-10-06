@@ -36,7 +36,7 @@ def parse_args(argv=None):
     parser.add_argument('--bind', default='0.0.0.0')
     parser.add_argument('--port', type=int, default=5000)
     parser.add_argument('--display', action='store_true')
-    parser.add_argument('--backend', choices=['cpu'], default='cpu')
+    parser.add_argument('--backend', choices=['cpu', 'cuda'], default='cpu')
     parser.add_argument('--config', type=Path, help='Existing detector YAML configuration')
     parser.add_argument('--output', type=Path, help='Save the final decoded image')
     parser.add_argument('--max-frames', type=int, default=0)
@@ -106,6 +106,7 @@ def run(args):
                             if logger:
                                 largest = processed.detections[0] if processed.detections else None
                                 logger.write({
+                                    'completed_timestamp_ns': finished_ns,
                                     'session_id': session_id, 'frame_id': packet.header.frame_id,
                                     'capture_timestamp_ns': packet.header.capture_timestamp_ns,
                                     'jpeg_encode_ms': packet.header.jpeg_encode_ns / 1e6,
@@ -156,7 +157,7 @@ def main():
         run(parse_args())
     except KeyboardInterrupt:
         print('Receiver stopped', flush=True)
-    except (OSError, ValueError, EOFError, cv2.error) as exc:
+    except (OSError, ValueError, RuntimeError, EOFError, cv2.error) as exc:
         print(f'Receiver failed: {exc}', file=sys.stderr)
         return 1
     return 0

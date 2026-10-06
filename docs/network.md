@@ -3,7 +3,7 @@
 The sender performs capture and JPEG encoding only. The receiver decodes frames,
 runs the existing detector through `CPUBackend`, draws detections, and optionally
 logs real measurements. All detector YAMLs, including camera calibration, are
-accepted by the receiver. The local `src.pipeline` command remains available.
+accepted by the CPU backend; CUDA currently supports HSV configs only. The local `src.pipeline` command remains available.
 
 ```text
 Phone optical signal
@@ -14,9 +14,9 @@ Phone optical signal
   → detections + visualization + profiling
 ```
 
-CUDA processing and CPU/CUDA comparison are the next gated phases. At this stage,
-`--backend cpu` is the only implemented receiver backend; no GPU acceleration is
-claimed merely because the receiver runs on a GPU workstation.
+The receiver also implements a hybrid CUDA backend: see [Method 3](cuda.md)
+for its separate OpenCV build, hardware-validation gates, and CPU/CUDA benchmark.
+This guide covers the CPU path. Merely having a GPU does not enable acceleration.
 
 ## Install and start
 
@@ -213,6 +213,6 @@ python tools/check_cuda.py
 This calls `cv2.cuda.getCudaEnabledDeviceCount()` and records the complete OpenCV
 build information in `results/benchmark/cuda-preflight.json`. A nonpositive count
 fails validation; GPU processing must not be claimed in that environment. A
-positive count only passes the device prerequisite, not backend correctness or
-performance. Share the report before proceeding if the check fails. Phase G
-must wait until an actual CUDA backend can run and be compared with CPU output.
+positive count is followed by an actual GPU red-target smoke test. Full accuracy
+and speed validation still require the parity tests and benchmark in [the CUDA
+guide](cuda.md). Stop and share the report if the check fails.

@@ -220,6 +220,7 @@
 
   <aside id="controls">
     <h1>Optical Signal Generator</h1>
+    <p class="hint"><a id="calibration-link" href="calibration.html?brightness=80" style="color:var(--accent)">Open automatic calibration chart</a></p>
 
     <div class="group">
       <label class="label-row" for="mode">Mode</label>
@@ -348,6 +349,7 @@
     function render() {
       const { width, height } = layout();
       document.body.style.background = backgrounds[state.background];
+      $('calibration-link').href = `calibration.html?brightness=${state.brightness}`;
       $('brightness-value').textContent = `${state.brightness}%`;
       $('radius-value').textContent = `${state.radius} px`;
       $('x-value').textContent = state.x.toFixed(3);

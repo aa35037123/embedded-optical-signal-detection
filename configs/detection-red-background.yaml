@@ -1,13 +1,16 @@
-# Starting point for bright red display targets against a dim reddish background.
-# Not a calibrated NoIR profile: verify with raw camera pixels and debug masks.
-# Raise red value_min above background V while keeping it below target V.
-# A stricter threshold may reject dim targets. Other color/area settings are unchanged.
+# Bright display targets against the current Pi/IMX219 reddish background.
+# Tuned against both red_cast_phone*.png regression captures; not a camera color correction.
+# Shape and local-contrast gates reject thin edges and weak background fragments.
+# Green includes yellow-shifted dots; blue includes purple-shifted dots.
+# Red targets measured near S=255; pink background measured around S=200-220.
 width: 640
 height: 480
 min_area: 50
 max_area: 5000
 # Confidence mixes shape and brightness; keep diagnostic-only for color-shifted cameras.
 min_confidence: 0.0
+min_circularity: 0.55
+min_color_contrast: 12.0
 morphology:
   open_kernel: 3
   close_kernel: 5
@@ -15,21 +18,21 @@ colors:
   red:
     hue_ranges:
       - [0, 12]
-      - [168, 180]
-    saturation_min: 140
+      - [166, 179]
+    saturation_min: 230
     saturation_max: 255
     value_min: 180
     value_max: 255
   green:
     hue_ranges:
-      - [36, 90]
+      - [24, 89]
     saturation_min: 80
     saturation_max: 255
     value_min: 60
     value_max: 255
   blue:
     hue_ranges:
-      - [90, 130]
+      - [90, 150]
     saturation_min: 80
     saturation_max: 255
     value_min: 60

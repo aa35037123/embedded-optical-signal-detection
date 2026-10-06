@@ -27,7 +27,10 @@ def parse_args(argv=None):
     parser.add_argument('--jpeg-quality', type=int, default=85)
     parser.add_argument('--max-frames', type=int, default=0)
     parser.add_argument('--timeout', type=float, default=5)
+    parser.add_argument('--tuning-file', type=Path, help='Pi camera ISP tuning JSON, e.g. imx219_noir.json (full path).')
     args = parser.parse_args(argv)
+    if args.tuning_file and (args.image or args.video):
+        parser.error('--tuning-file requires the Pi camera source')
     if not (1 <= args.port <= 65535 and 1 <= args.jpeg_quality <= 100 and
             1 <= args.width <= 8192 and 1 <= args.height <= 8192 and
             args.width * args.height <= 16 * 1024 * 1024 and args.max_frames >= 0 and
