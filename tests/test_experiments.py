@@ -43,3 +43,30 @@ def test_one_to_one_matching_and_wrong_color():
     assert match_points(truth,pred,3)[:3] == (2,1,0)
     assert match_points(truth,[{'color':'blue','x':0,'y':0}],3)[:3] == (0,1,2)
     assert scores(0,0,0)['precision'] is None
+
+
+def test_legacy_network_completion_reconstruction(tmp_path):
+    path = tmp_path/'legacy.csv'
+    fields = ['session_id','frame_id','receive_timestamp_ns','local_receive_to_done_ms',
+              'backend','processing_ms','upload_ms','download_ms']
+    with path.open('w') as handle:
+        writer = csv.DictWriter(handle,fieldnames=fields)
+        writer.writeheader()
+        for index, delay in enumerate([10,20,30]):
+            writer.writerow(dict(zip(fields,[1,index,10**18+index*10**9,delay,'cuda',5,1,2])))
+    report = summarize(path,warmup=0)
+    assert report['average_fps'] == pytest.approx(2/2.02)
+    assert report['completion_timestamp_sources'] == ['receive_timestamp_ns + local_receive_to_done_ms']
+    assert report['detector_including_transfers_ms']['mean'] == 8
+
+
+def test_timestamp_fallbacks_and_actionable_error():
+    from tools.compare_experiments import completion_timestamp
+    assert completion_timestamp({'completed_timestamp_ns':'123'}) == (123,'recorded')
+    stamp, source = completion_timestamp({'completed_timestamp_ns':'',
+        'receive_timestamp_ns':'1000000000000000000', 'queue_wait_ms':'0.000001',
+        'total_workstation_ms':'0.000002'})
+    assert stamp == 1000000000000000003
+    assert 'queue_wait_ms' in source
+    with pytest.raises(ValueError,match='Processing time alone'):
+        completion_timestamp({'processing_ms':'10','capture_timestamp_ns':'123'})

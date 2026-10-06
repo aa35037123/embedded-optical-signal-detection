@@ -189,3 +189,19 @@ event recall and detection delay using labeled sequences as a follow-up.
 Choose a method based on recall/precision and latency requirements, then compare
 speed and hardware cost. A 30 FPS camera can cap all three methods at 30 FPS even
 when their computation times are very different.
+
+## Comparing older CSV formats
+
+Current Pi and PC loggers use the same CSV header, leaving stages that do not
+apply blank (Pi capture/read versus PC decode/network/GPU transfer timings).
+Older receiver versions did not write completed_timestamp_ns. The comparison
+tool can recover it from receive_timestamp_ns + local_receive_to_done_ms, or
+receive_timestamp_ns + queue_wait_ms + total_workstation_ms. These fields use
+the same PC clock; the Pi capture timestamp is never used for this recovery.
+The JSON records completion_timestamp_sources for each trial.
+
+If neither form is present, actual completed FPS cannot be recovered from
+processing durations alone. Update the code on both machines and record a new
+trial under a new filename. The tool reports the affected file and missing
+measurements. Run --warmup 0 only for short format smoke tests, not to hide
+insufficient measured frames in a performance trial.

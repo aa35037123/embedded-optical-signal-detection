@@ -6,8 +6,8 @@ No ML is used. Choose one of three launch methods:
 | Method | Raspberry Pi | PC / GPU workstation |
 | --- | --- | --- |
 | [1. Pi only (CPU)](#method-1-launch-on-the-raspberry-pi-only) | Capture, detect, and display locally | Not needed |
-| [2. Pi → PC(GPU)](#method-2-stream-from-the-pi-to-a-pc--gpu-workstation) | Capture and send JPEG frames over TCP | Receive, detect, display, and profile |
-| [3. Pi → PC CUDA](docs/cuda.md) | Capture and send JPEG frames | GPU HSV/morphology, CPU contour filtering |
+| [2. Pi → PC (CPU)](#method-2-pi--pc-cpu) | Capture and send JPEG frames over TCP | Receive, detect, display, and profile |
+| [3. Pi → PC (GPU)](#method-3-pi--pc-gpu) | Capture and send JPEG frames | GPU HSV/morphology, CPU contour filtering |
 
 **Backend support:** Methods 1 and 2 use CPU OpenCV. [Method 3: Pi → PC CUDA](docs/cuda.md)
 uses the new hybrid GPU backend. It requires CUDA-enabled OpenCV on an NVIDIA PC.
@@ -18,6 +18,10 @@ launch, and benchmark instructions.
 For a repeatable three-method comparison, see [performance and accuracy experiments](docs/experiments.md): trial commands, CSV summaries, precision/recall, and position error.
 
 ![Real-time optical target detection demo](assets/demo.gif)
+
+See [Experimental results and discussion](#experimental-results-and-discussion)
+for the detailed interpretation and proposed follow-up experiments.
+
 
 Run every command below from the repository root on the indicated machine.
 For test targets, open the [phone signal generator](#optical-signal-generator).
@@ -73,7 +77,39 @@ throughput. Press **q/Escape** or **Ctrl+C** to exit. For headless operation, om
 
 For missed red points, see [Adjust red detection](#adjust-red-detection).
 
-## Method 2: Stream from the Pi to a PC / GPU workstation
+### Why the NoIR tuning file is needed
+
+`--tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json` loads the
+image signal processor (ISP) settings intended for the IMX219 NoIR module.
+NoIR cameras lack an infrared-cut filter and need different automatic white
+balance settings from standard camera modules. The default tuning produced a
+strong pink cast in this setup, shifting the apparent colors of both targets
+and background. The matching NoIR tuning greatly reduced that cast, making
+ordinary HSV color thresholds more useful. Raspberry Pi documents the need
+for this [NoIR tuning override](https://www.raspberrypi.com/documentation/computers/camera_software.html#tweak-camera-behaviour-with-tuning-files).
+
+This correction happens on the Pi before detection or JPEG transmission, so
+both the Pi-only and PC receiver methods benefit. It is camera tuning rather
+than the optional interactive color-chart calibration. Supply the option on
+every launch; `--config` separately controls the detector's color and blob
+thresholds. Use `pisp` instead of `vc4` on Pi 5.
+
+<table>
+  <tr>
+    <th width="50%">Before color correction</th>
+    <th width="50%">After NoIR tuning</th>
+  </tr>
+  <tr>
+    <td><img src="assets/Before-color-calibration.png" alt="Before NoIR tuning: pink camera image with no detected targets" width="100%"></td>
+    <td><img src="assets/After-color-calibration.png" alt="After NoIR tuning: reduced color cast and labeled red and green targets" width="100%"></td>
+  </tr>
+</table>
+
+These screenshots illustrate the improvement in color appearance. They show
+different scenes and processing setups, so their displayed FPS values are not
+a controlled before/after performance comparison.
+
+## Method 2: Pi → PC (CPU)
 
 ```text
 Phone RGB points → Pi camera → Picamera2 → JPEG encoding
@@ -81,7 +117,8 @@ Phone RGB points → Pi camera → Picamera2 → JPEG encoding
 ```
 
 The Pi performs camera capture and JPEG encoding. Detection and visualization
-run on the PC. Use this mode to move processing off the Pi and collect timing
+run on the PC CPU; no GPU is required or used. Use this mode to move processing
+off the Pi and collect timing
 measurements. Start the PC receiver **before** the Pi sender.
 
 ### Set up both machines (first time)
@@ -144,7 +181,7 @@ The Pi sender applies camera tuning before encoding; the PC loads the detector
 thresholds. Use `pisp` instead of `vc4` on Pi 5. The Pi sender does not run the detector. Use **q/Escape** in the PC preview or
 **Ctrl+C** to stop; the sender also exits and releases the camera on disconnect.
 
-### Results and GPU status
+### CPU results and profiling
 
 The PC writes measured per-frame timings and detections to
 `results/network/cpu.csv`, plus aggregate statistics to
@@ -153,18 +190,145 @@ the same path. A one-slot latest-frame buffer replaces old pending frames if
 processing falls behind, and counts those replacements. Pi and PC timestamps
 have different clock origins; they are not subtracted to claim network latency.
 
-**Method 2 uses `--backend cpu`.** For Method 3, follow [the CUDA guide](docs/cuda.md).
-Check prerequisites on the **NVIDIA PC**, in its CUDA environment:
-
-```bash
-python tools/check_cuda.py
-```
-
-The report is saved to `results/benchmark/cuda-preflight.json`. A positive CUDA
-device count is only a prerequisite; it does not enable a CUDA detector.
-
 See [network setup, validation, and profiling](docs/network.md) for static-image
 and video sender tests, protocol details, timing definitions, and troubleshooting.
+
+## Method 3: Pi → PC (GPU)
+
+```text
+Phone RGB points → Pi camera with NoIR tuning → JPEG encoding → TCP
+  → PC CPU JPEG decoding → GPU HSV masks and morphology
+  → PC CPU contour filtering → PC display + CSV profiling
+```
+
+This method uses `--backend cuda` on an NVIDIA PC. It accelerates HSV conversion,
+color thresholding and morphology; JPEG decoding, contour measurement and
+visualization still run on the CPU. The Pi sender is the same as Method 2.
+
+### Set up and validate CUDA on the PC
+
+Follow the **[CUDA build, validation and benchmark guide](docs/cuda.md)** first.
+It explains how to create `.venv-cuda` and install CUDA-enabled OpenCV. Standard
+pip OpenCV wheels do not enable CUDA acceleration.
+
+In the repository root on the **PC**, validate the CUDA environment:
+
+```bash
+source .venv-cuda/bin/activate
+python tools/check_cuda.py
+python -m pytest tests/test_cuda_backend.py -v
+```
+
+Continue only if preflight and GPU tests pass without skips. The preflight report
+is saved to `results/benchmark/cuda-preflight.json`.
+
+### Start the GPU receiver on the PC
+
+```bash
+python -m src.network.receiver --bind 0.0.0.0 --port 5000 \
+  --backend cuda --display \
+  --config configs/detection-noir.yaml \
+  --csv results/network/cuda.csv
+```
+
+Wait for `Listening on 0.0.0.0:5000` before starting the Pi sender.
+
+### Start the sender on the Pi
+
+Close any other camera process and replace `YOUR_PC_IP` with the PC's LAN address:
+
+```bash
+source .venv/bin/activate
+python -m src.network.sender --host YOUR_PC_IP --port 5000 \
+  --width 640 --height 480 --fps 30 --jpeg-quality 85 \
+  --tuning-file /usr/share/libcamera/ipa/rpi/vc4/imx219_noir.json
+```
+
+Use `pisp` instead of `vc4` on Pi 5. Camera tuning runs on the Pi; detector
+thresholds are loaded on the PC. This backend supports HSV configurations such
+as `detection-noir.yaml`, not calibrated `color_samples_bgr` configurations.
+
+### GPU results and profiling
+
+The receiver reports `backend=cuda` and writes `results/network/cuda.csv` and
+`results/network/cuda.summary.json`. Use **q/Escape** in the PC preview or
+**Ctrl+C** to stop. Compare GPU and CPU measurements using the
+[experiment guide](docs/experiments.md); GPU acceleration does not guarantee
+lower latency for this workload.
+
+## Experimental results and discussion
+
+The following results were reported from three trials per method at **640×480**
+with the camera/sender configured for **30 FPS**. Detector time includes GPU
+upload and download where applicable; it excludes camera acquisition, network
+transport, JPEG decoding and visualization. See the [experiment guide](docs/experiments.md)
+for timing definitions and a repeatable comparison procedure.
+
+| Method | Trials | Mean FPS | Mean detector ms incl. transfers |
+| --- | ---: | ---: | ---: |
+| Pi only | 3 | 12.11 | 77.529 |
+| Pi → PC CPU | 3 | 29.43 | 9.091 |
+| Pi → PC CUDA | 3 | 29.50 | 12.428 |
+
+**The PC CPU had the lowest detector time in this experiment.** CUDA took
+3.337 ms more per frame, or about 36.7% longer, including transfers. Method3's slightly
+higher FPS does not establish a GPU speed advantage.
+That difference is only 0.07 FPS (about 0.24%); trial variability is needed to
+judge whether it is meaningful. Moving processing from the Pi to either PC
+backend increased observed throughput by roughly 2.4 times.
+
+### Why CPU and CUDA both deliver about 30 FPS
+
+At the configured 30 FPS, a new source frame is available about every
+`1000 / 30 = 33.3 ms`. The PC detector times, 9.091 ms and 12.428 ms, are both
+well below that interval. Once each PC finishes its work, it can wait for the
+next frame rather than immediately process another one. The measured rates
+near 30 FPS are therefore consistent with an input-rate limit, even though
+CPU detection is faster. JPEG decoding, transmission and display also consume
+time, so detector time alone cannot prove how much idle time remains.
+
+By contrast, the Pi's 77.529 ms detector time already exceeds the 33.3 ms frame
+budget. Detection alone corresponds to roughly 12.9 frames per second; capture
+and other loop overhead help explain the observed 12.11 FPS. The Pi-only method
+is processing-limited under these conditions. The 30 FPS setting is the input
+rate of this experiment, not a claim that every IMX219 sensor mode is limited
+to 30 FPS.
+
+### Why the GPU is not faster here
+
+At 640×480, each frame contains only 307,200 pixels, and HSV thresholding and
+morphology are relatively lightweight operations. A PC CPU can handle this
+work efficiently. The CUDA path additionally uploads the image, launches GPU
+operations and downloads the HSV image and masks. It also retains contour
+measurement, local contrast checks and other filtering on the CPU. These costs
+can outweigh the savings from parallel image processing at this workload.
+This is an explanation consistent with the result; the separate upload,
+processing and download measurements are needed to confirm the dominant cost.
+
+Higher resolution or more intensive image processing **may** make the GPU
+beneficial by providing more parallel work per transfer. That crossover is
+not guaranteed: transfers and CPU stages can also become more expensive.
+Increasing the number of target points is different from increasing resolution.
+More points mainly increase contour and validation work, which currently runs
+on the CPU, so more targets alone may not favor this CUDA implementation.
+
+### What to conclude and test next
+
+For this tested 640×480, 30 FPS workload, PC CPU processing is sufficient to
+keep up with the stream and has the lowest measured detector time. CUDA is a
+candidate for larger workloads, rather than a demonstrated improvement here.
+Compare 640×480 and 1280×720 using identical source frames and configurations,
+then vary target count separately. An offline benchmark without camera pacing
+can reveal compute speed differences hidden by the 30 FPS input ceiling.
+Report p95/p99 latency, skipped frames, GPU transfer time and variation across
+trials alongside average FPS. These measurements are not camera-to-display
+latency; that requires a separate end-to-end measurement.
+
+Finally, I will work on report precision (false points), recall (missed points), per-color F1 and centroid
+error on held-out labeled frames, including JPEG-compressed inputs. 
+The table
+above contains performance results only and does not establish equal accuracy
+between methods, but it's not enought. Throughput is useful only if detection remains correct. 
 
 ## Additional local inputs and output
 
